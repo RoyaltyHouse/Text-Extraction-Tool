@@ -6,7 +6,7 @@ import requests
 import urllib.parse
 import re
 import tempfile
-from extractor import extract_text_from_pdf
+from extractor import extract_text_from_pdf,textract_text_image_by_image,textract_lines_by_page_from_file
 from database import save_data_to_database, get_data_from_database, delete_data_from_database
 from flask_cors import CORS
 import os
@@ -26,177 +26,54 @@ JSON_FILE = "field_descriptions.json"
 ALLOWED_EXTS = {"pdf"}
 ALLOWED_MIME = {"application/pdf"}
 
-def textract_lines_by_page_from_file(file, bucket=S3_BUCKET):
-
-    # Save the file to a temporary local path
-    local_path = os.path.join(tempfile.gettempdir(), file.filename)
-    file.save(local_path)
-    print(f"[DEBUG] Saved file locally at: {local_path}")
-
-    # Upload to S3
-    key = file.filename
-    s3.upload_file(local_path, bucket, key)
-    print(f"[DEBUG] Upload successful: s3://{bucket}/{key}")
-
-    # Start async text detection
-    job = textract.start_document_text_detection(
-        DocumentLocation={"S3Object": {"Bucket": bucket, "Name": key}}
-    )
-    job_id = job["JobId"]
-    print(f"[DEBUG] Started Textract job with JobId: {job_id}")
-
-    # Poll until done
-    while True:
-        resp = textract.get_document_text_detection(JobId=job_id, MaxResults=1000)
-        status = resp["JobStatus"]
-        if status in ("SUCCEEDED", "FAILED", "PARTIAL_SUCCESS"):
-            break
-        time.sleep(2)
-
-    if status != "SUCCEEDED":
-        raise RuntimeError(f"Textract job ended with status: {status}")
-
-    # Collect all pages using NextToken
-    blocks = resp["Blocks"]
-    next_token = resp.get("NextToken")
-    while next_token:
-        resp = textract.get_document_text_detection(
-            JobId=job_id, MaxResults=1000, NextToken=next_token
-        )
-        blocks.extend(resp["Blocks"])
-        next_token = resp.get("NextToken")
-
-    # Collect lines by page
-    page_text_dict = {}
-    for b in blocks:
-        if b.get("BlockType") == "LINE" and "Text" in b:
-            page_num = b.get("Page", 1)
-            page_text_dict.setdefault(page_num, []).append(b["Text"])
-
-    if not any(page_text_dict.values()):
-        return {"error": "No extractable text found in the document."}
-    else:
-        sample_preview = []
-        for lines in page_text_dict.values():
-            sample_preview.extend(lines)
-            if len(sample_preview) >= 5:
-                break
-        print("[DEBUG] Sample extracted lines:", sample_preview[:5])
-        return page_text_dict
-    
-
-
-json_str = {
-    "Alternative Counterparties": {
-        "page_number": 1,
-        "value": "RCA Records, Sony Music Entertainment"
-    },
-    "Artist Name": {
-        "page_number": 1,
-        "value": "A$AP Mob"
-    },
-    "Classification of Recoupment Language": {
-        "page_number": 4,
-        "value": "No royalty shall be payable to you hereunder until Company has recouped all Recording Costs incurred in connection with the Album at the \"net artist\" rate (i.e., Our Basic Rate less the Producer Basic Rate and the royalty rate payable to all other producers, engineers, mixers, and other royalty participants) (excluding the Advance and any \"in-pocket\" Artist advances. After recoupment of such Recording Costs as aforesaid, royalties shall be payable to you hereunder for all records sold for which royalties are payable, retroactively from the first such record sold, subject to recoupment from such royalties of the Advance."
-    },
-    "Client Party": {
-        "page_number": 1,
-        "value": "19/20 Music, LLC"
-    },
-    "Direct Counterparty": {
-        "page_number": 1,
-        "value": "ASAP WORLDWIDE, LLC"
-    },
-    "Distributor": {
-        "page_number": 1,
-        "value": "RCA Records"
-    },
-    "Document Name": {
-        "page_number": 1,
-        "value": "A$AP Mob - Cozy Tapes: Vol. 2 FX"
-    },
-    "Effective Date": {
-        "page_number": 1,
-        "value": "August 1, 2017"
-    },
-    "Execution Status": {
-        "page_number": 9,
-        "value": "FX"
-    },
-    "Label": {
-        "page_number": 1,
-        "value": "Sony Music Entertainment"
-    },
-    "Lawyer Information": {
-        "page_number": 1,
-        "value": {
-            "client_lawyer": "C/O B. Lawrence Watkins & Associates, P.C., 325 Edgewood Avenue, SE, Suite 200, Atlanta, Georgia 30312",
-            "counterparty_lawyer": "C/O Davis Shapiro Lewit Grabel Leven Granderson & Blake, LLP, 150 S. Rodeo Drive, Suite 200, Beverly Hills, CA 90212"
-        }
-    },
-    "Legal Advance": {
-        "page_number": 3,
-        "value": "$1,000"
-    },
-    "Organization Counting Units": {
-        "page_number": 4,
-        "value": "USNRC"
-    },
-    "Producer Advance Legal Recoupment": {
-        "page_number": 3,
-        "value": "$6,000"
-    },
-    "Producer Royalty Points": {
-        "page_number": 4,
-        "value": "3% of the Royalty Base Price"
-    },
-    "Recoupment Classification": {
-        "page_number": 3,
-        "value": "non-returnable but recoupable"
-    },
-    "Single/Multisong Line": {
-        "page_number": 1,
-        "value": "one (1) master recording"
-    },
-    "Song Title": {
-        "page_number": 1,
-        "value": "Bahamas"
-    },
-    "Third Party Money": {
-        "page_number": 13,
-        "value": "15%"
-    },
-    "Type of Royalty": {
-        "page_number": 4,
-        "value": "NAR"
-    }
-}
-
-
 
 @app.route('/extract', methods=['POST'])
 def uploads():
-    file = request.files['file']
-    # Validate file type
-    filename = file.filename.lower()
-    if not filename.endswith('.pdf'):
-        if filename.endswith(('.doc', '.docx')):
-            print(f"[DEBUG] Received file: {file.filename}")
-            return jsonify({"error": "Currently, only PDF files are supported. Word document support is coming soon."}), 400
-        else:
-            return jsonify({"error": "File type not supported. Only PDF is allowed."}), 400
-    print(f"[DEBUG] Received file: {file.filename}")
-    if not file:
+    files = request.files.getlist("file")
+    if not files:
         return jsonify({"error": "No file provided"}), 400
-    # Textract helper
-    page_text_dict = textract_lines_by_page_from_file(file, bucket=S3_BUCKET)
-    preview = extract_text_from_pdf(page_text_dict)
-    databaseResponse = save_data_to_database(preview,file.filename)
-    return jsonify({
-        'file': file.filename,
-        'DatabaseResponse': databaseResponse.get("message")+" in database",
-        'preview': preview
-    })
+
+    results = []
+    # Initialize variables for combined text and file list
+    combined_text, file_list, page_counter = {}, [], 1
+    for file in files:
+        filename = file.filename.lower()
+        if filename.endswith('.pdf'):
+            print(f"[DEBUG] Received PDF file: {file.filename}")
+            page_text_dict = textract_lines_by_page_from_file(file, bucket=S3_BUCKET)
+            preview = extract_text_from_pdf(page_text_dict)
+            databaseResponse = save_data_to_database(preview, file.filename)
+            results.append({
+                'file': file.filename,
+                'DatabaseResponse': databaseResponse.get("message") + " in database",
+                'preview': preview
+            })
+        elif filename.endswith(('.doc', '.docx')):
+            print(f"[DEBUG] Received file: {file.filename}")
+            results.append({
+                "file": file.filename,
+                "error": "Currently, only PDF files are supported. Word document support is coming soon."
+            })
+        elif filename.endswith(('.jpeg', '.jpg', '.png')):
+            print(f"[DEBUG] Received image file: {file.filename}")
+            extract_text = textract_text_image_by_image(file)
+            combined_text[str(page_counter)] = extract_text
+            page_counter += 1
+            file_list.append(file.filename)
+        else:
+            results.append({
+                "file": file.filename,
+                "error": "File type not supported. Only PDF, JPEG, JGE, PNG is allowed."
+            })
+    if combined_text:
+        preview = extract_text_from_pdf(combined_text)
+        databaseResponse = save_data_to_database(preview, file.filename)
+        results.append({
+            'file': ", ".join(file_list),
+            'DatabaseResponse': databaseResponse.get("message") + " in database",
+            'preview': preview
+        })
+    return jsonify(results)
 
 
 def _normalize_to_direct_download(url: str) -> str:

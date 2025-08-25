@@ -23,6 +23,8 @@ def extract_field_information(page_text):
     content = response.choices[0].message.content
     print(f"[DEBUG] Received response from OpenAI: {content.strip()}")
     # Remove code block markers if present
+    
+
     if content.strip().startswith('```'):
         lines = content.strip().splitlines()
         if lines[0].startswith('```'):
