@@ -41,6 +41,9 @@ def uploads():
         if filename.endswith('.pdf'):
             print(f"[DEBUG] Received PDF file: {file.filename}")
             page_text_dict = textract_lines_by_page_from_file(file, bucket=S3_BUCKET)
+            if isinstance(page_text_dict, tuple) or not isinstance(page_text_dict, dict):
+                return page_text_dict  # This handles both (jsonify_dict, 200) and just a Response object
+
             preview = extract_text_from_pdf(page_text_dict)
             databaseResponse = save_data_to_database(preview, file.filename)
             results.append({

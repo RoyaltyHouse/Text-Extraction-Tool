@@ -3,7 +3,7 @@ from pypdf import PdfReader
 from gpt_extractor import extract_field_information
 import json , os, tempfile, time
 import boto3
-import threading
+from flask import jsonify
 import time
 
 
@@ -25,6 +25,8 @@ def extract_text_from_pdf(text):
 
 def textract_text_image_by_image(file):
     extract = textract_lines_by_page_from_file(file, bucket=S3_BUCKET)
+    if isinstance(extract, tuple) or not isinstance(extract, dict):
+                return extract  # This handles both (jsonify_dict, 200) and just a Response object
     if isinstance(extract, dict):
         # If nested like {1: [...]} and only one page, unwrap it
         if len(extract) == 1:
@@ -62,7 +64,7 @@ def textract_lines_by_page_from_file(file, bucket=S3_BUCKET):
     start_time = time.time()
     while True:
         if time.time() - start_time > 115:
-            raise Exception("Text Quality is not good to extract.")
+            return jsonify({"error": "Text extraction failed due to poor image quality, formatting, or an unreadable document."}), 200
 
         resp = textract.get_document_text_detection(JobId=job_id, MaxResults=1000)
         status = resp["JobStatus"]
