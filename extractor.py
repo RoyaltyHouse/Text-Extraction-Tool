@@ -12,25 +12,6 @@ S3_BUCKET = os.getenv("BUCKET_NAME")  # Replace with your actual bucket name
 s3 = boto3.client('s3')
 textract = boto3.client('textract')
 
-shared_value = None
-
-def wait_for_page_text_dict(page_text_dict, timeout=115, interval=10):
-    start_time = time.time()
-    while (time.time() - start_time) < timeout:
-        if any(page_text_dict.values()):
-            print("[INFO] Extracted lines found")
-            return
-        print(f"[DEBUG] No lines yet. Retrying in {interval} seconds...")
-        time.sleep(interval)
-    raise TimeoutError("Text extraction timed out after 1 minute and 55 seconds.")
-
-
-
-
-
-
-
-
 
 def extract_text_from_pdf(text):
     if( text is None):
@@ -73,18 +54,24 @@ def textract_lines_by_page_from_file(file, bucket=S3_BUCKET):
 
     # Start async text detection
     job = textract.start_document_text_detection(
-        DocumentLocation={"S3Object": {"Bucket": bucket, "Name": key}}
-    )
+        DocumentLocation={"S3Object": {"Bucket": bucket, "Name": key}})
     job_id = job["JobId"]
     print(f"[DEBUG] Started Textract job with JobId: {job_id}")
 
-    # Poll until done
+    # Poll until done or timeout
+    start_time = time.time()
     while True:
+        if time.time() - start_time > 115:
+            raise Exception("Text Quality is not good to extract.")
+
         resp = textract.get_document_text_detection(JobId=job_id, MaxResults=1000)
         status = resp["JobStatus"]
+        print(f"[DEBUG] Job status: {status}")
+    
         if status in ("SUCCEEDED", "FAILED", "PARTIAL_SUCCESS"):
             break
         time.sleep(2)
+
 
     if status != "SUCCEEDED":
         raise RuntimeError(f"Textract job ended with status: {status}")
@@ -115,7 +102,6 @@ def textract_lines_by_page_from_file(file, bucket=S3_BUCKET):
             if len(sample_preview) >= 5:
                 break
         print("[DEBUG] Sample extracted lines:", sample_preview[:5])
-        wait_for_page_text_dict(page_text_dict)
         return page_text_dict
     
 
