@@ -3,12 +3,33 @@ from pypdf import PdfReader
 from gpt_extractor import extract_field_information
 import json , os, tempfile, time
 import boto3
+import threading
+import time
 
 
 # S3 configuration
 S3_BUCKET = os.getenv("BUCKET_NAME")  # Replace with your actual bucket name
 s3 = boto3.client('s3')
 textract = boto3.client('textract')
+
+shared_value = None
+
+def wait_for_page_text_dict(page_text_dict, timeout=115, interval=10):
+    start_time = time.time()
+    while (time.time() - start_time) < timeout:
+        if any(page_text_dict.values()):
+            print("[INFO] Extracted lines found")
+            return
+        print(f"[DEBUG] No lines yet. Retrying in {interval} seconds...")
+        time.sleep(interval)
+    raise TimeoutError("Text extraction timed out after 1 minute and 55 seconds.")
+
+
+
+
+
+
+
 
 
 def extract_text_from_pdf(text):
@@ -94,6 +115,7 @@ def textract_lines_by_page_from_file(file, bucket=S3_BUCKET):
             if len(sample_preview) >= 5:
                 break
         print("[DEBUG] Sample extracted lines:", sample_preview[:5])
+        wait_for_page_text_dict(page_text_dict)
         return page_text_dict
     
 
