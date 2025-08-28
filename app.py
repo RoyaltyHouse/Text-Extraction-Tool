@@ -58,7 +58,7 @@ def uploads():
                 "error": "Currently, only PDF files are supported. Word document support is coming soon."
             })
         elif filename.endswith(('.jpeg', '.jpg', '.png')):
-            print(f"[DEBUG] Received image file: {file.filename}")
+            print(f"[DEBUG] Received image files: {file.filename}")
             extract_text = textract_text_image_by_image(file)
             combined_text[str(page_counter)] = extract_text
             page_counter += 1
