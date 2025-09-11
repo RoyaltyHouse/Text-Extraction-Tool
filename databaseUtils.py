@@ -3,7 +3,8 @@ from typing import Any, Dict, Optional
 
 def convert_extracted_to_db(
     extracted: Dict[str, Dict[str, Any]],
-    file_name: str
+    file_name: str,
+    artist_id,original_document_id
 ) -> Dict[str, Any]:
     """
     Convert extracted fields like:
@@ -41,6 +42,8 @@ def convert_extracted_to_db(
 
     payload: Dict[str, Optional[Any]] = {
         "file": file_name,
+        "artist_id":artist_id,
+        "original_document_id":original_document_id
     }
 
     for base in FIELD_MAP.values():

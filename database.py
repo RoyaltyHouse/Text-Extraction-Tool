@@ -6,11 +6,11 @@ base_url = os.getenv("DataBase_URL")
 
 
 
-def save_data_to_database(data,file_name):
+def save_data_to_database(data,file_name,artist_id,original_document_id):
     print(f"[DEBUG] Saving data to database at /parsed-contracts")
     
     # Convert the extracted data to the database schema
-    database_data = convert_extracted_to_db(data,file_name)
+    database_data = convert_extracted_to_db(data,file_name,artist_id,original_document_id)
 
     try:
         response = requests.post(f"{base_url}/parsed-contracts", json=database_data)

@@ -29,6 +29,9 @@ ALLOWED_MIME = {"application/pdf"}
 
 @app.route('/extract', methods=['POST'])
 def uploads():
+    artist_id = request.args.get("artist_id")
+    original_document_id = request.args.get("original_document_id")
+    print(f"Received artist_id: {artist_id} and document_id: {original_document_id}")
     files = request.files.getlist("file")
     if not files:
         return jsonify({"error": "No file provided"}), 400
@@ -45,7 +48,7 @@ def uploads():
                 return page_text_dict  # This handles both (jsonify_dict, 200) and just a Response object
 
             preview = extract_text_from_pdf(page_text_dict)
-            databaseResponse = save_data_to_database(preview, file.filename)
+            databaseResponse = save_data_to_database(preview, file.filename,artist_id,original_document_id)
             results.append({
                 'file': file.filename,
                 'DatabaseResponse': databaseResponse.get("message") + " in database",
