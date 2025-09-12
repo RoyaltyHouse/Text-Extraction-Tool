@@ -5,9 +5,7 @@ import boto3,time
 import requests
 import urllib.parse
 import re
-import tempfile
 from extractor import extract_text_from_pdf,textract_text_image_by_image,textract_lines_by_page_from_file
-from database import save_data_to_database, get_data_from_database, delete_data_from_database
 from flask_cors import CORS
 import os
 import time
@@ -48,7 +46,6 @@ def uploads():
                 return page_text_dict  # This handles both (jsonify_dict, 200) and just a Response object
 
             preview = extract_text_from_pdf(page_text_dict)
-            # databaseResponse = save_data_to_database(preview, file.filename,artist_id,original_document_id)
             results.append({
                 'file': file.filename,
                 "artist_id":artist_id,
@@ -74,7 +71,6 @@ def uploads():
             })
     if combined_text:
         preview = extract_text_from_pdf(combined_text)
-        # databaseResponse = save_data_to_database(preview, file.filename)
         results.append({
             'file': ", ".join(file_list),
             "artist_id":artist_id,
