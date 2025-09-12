@@ -31,7 +31,7 @@ Your task is:
         {{
           "value": "actual value here",
           "page_number": X,
-          "evidence_paragraph": "For each field you extracted, copy and paste the exact lines from the original document that were used to determine the value of that field. Make sure to include at least 100 words or more. Do not summarize — instead, directly copy the relevant lines from the provided text."
+                    
         }}
     - If not found in the entire document, return:
         {{

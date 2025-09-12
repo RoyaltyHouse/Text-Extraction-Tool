@@ -35,3 +35,7 @@ def extract_field_information(page_text):
     
     return json.loads(content)
 
+
+# prompt for paragraph evidence.
+
+# "evidence_paragraph": "For each field you extracted, copy and paste the exact lines from the original document that were used to determine the value of that field. Make sure to include at least 30 words or more. Do not summarize — instead, directly copy the relevant lines from the provided text."
