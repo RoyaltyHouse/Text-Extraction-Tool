@@ -49,7 +49,7 @@ def uploads():
             results.append({
                 'file': file.filename,
                 "artist_id":artist_id,
-            "original_document_id":original_document_id,
+                "original_document_id":original_document_id,
                 'preview': preview
             })
         elif filename.endswith(('.doc', '.docx')):
