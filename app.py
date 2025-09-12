@@ -31,7 +31,7 @@ ALLOWED_MIME = {"application/pdf"}
 def uploads():
     artist_id = request.args.get("artist_id")
     original_document_id = request.args.get("original_document_id")
-    print(f"Received artist_id: {artist_id} and document_id: {original_document_id}")
+    print(f"Received artist_id: {artist_id} and original_document_id: {original_document_id}")
     files = request.files.getlist("file")
     if not files:
         return jsonify({"error": "No file provided"}), 400
@@ -48,10 +48,11 @@ def uploads():
                 return page_text_dict  # This handles both (jsonify_dict, 200) and just a Response object
 
             preview = extract_text_from_pdf(page_text_dict)
-            databaseResponse = save_data_to_database(preview, file.filename,artist_id,original_document_id)
+            # databaseResponse = save_data_to_database(preview, file.filename,artist_id,original_document_id)
             results.append({
                 'file': file.filename,
-                'DatabaseResponse': databaseResponse.get("message") + " in database",
+                "artist_id":artist_id,
+            "original_document_id":original_document_id,
                 'preview': preview
             })
         elif filename.endswith(('.doc', '.docx')):
@@ -73,10 +74,11 @@ def uploads():
             })
     if combined_text:
         preview = extract_text_from_pdf(combined_text)
-        databaseResponse = save_data_to_database(preview, file.filename)
+        # databaseResponse = save_data_to_database(preview, file.filename)
         results.append({
             'file': ", ".join(file_list),
-            'DatabaseResponse': databaseResponse.get("message") + " in database",
+            "artist_id":artist_id,
+            "original_document_id":original_document_id,
             'preview': preview
         })
     return jsonify(results)
@@ -118,6 +120,8 @@ def _normalize_to_direct_download(url: str) -> str:
 # Extract text from file URL endpoint
 @app.route('/extract_from_url', methods=['POST'])
 def extract_from_url():
+    artist_id = request.args.get("artist_id")
+    original_document_id = request.args.get("original_document_id")
     data = request.get_json(force=True)
     file_url = data.get('url')
     # Normalize Google Drive share links to direct-download
@@ -162,11 +166,12 @@ def extract_from_url():
         page_text_dict = textract_lines_by_page_from_file(downloaded, bucket=S3_BUCKET)
         # Format preview with existing utility
         preview = extract_text_from_pdf(page_text_dict)
-        databaseResponse = save_data_to_database(preview,filename )
+        # databaseResponse = save_data_to_database(preview,filename )
         return jsonify({
             "url": file_url,
             "file": filename,
-            "DatabaseResponse": databaseResponse.get("message")+" in database",
+            "artist_id":artist_id,
+            "original_document_id":original_document_id,
             "preview": preview
         }), 200
     except requests.exceptions.RequestException as e:
