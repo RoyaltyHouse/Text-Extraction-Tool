@@ -120,7 +120,7 @@ The Flask server will start on `http://127.0.0.1:5000/` by default.
 ## Known Limitations
 - **API Gateway timeout**: REST API has a hard 29-second timeout. Documents that take longer to process through Textract + OpenAI will return a 504 Gateway Timeout. For longer processing times, consider switching to Lambda function URLs (up to 15 min timeout).
 - **File upload size**: Direct uploads via `/extract` are base64-encoded through API Gateway, so PDFs over ~4.5 MB will exceed Lambda's 6 MB payload limit. Use `/extract_from_url` for larger files.
-- **Multi-line coordinate matching**: Bounding box coordinates match a single Textract LINE block. Fields spanning multiple lines return the best-matching single line's bbox. When a value appears multiple times on the same page, the system uses proximity to the field label to disambiguate.
+- **Coordinate matching**: Bounding boxes are matched at the WORD level using Textract WORD blocks. For multi-word values, consecutive words are identified and their bboxes are merged into a single rectangle for precise highlighting. When a value appears multiple times on the same page, the system uses spatial proximity to the field label to disambiguate.
 
 ## Notes
 - Only PDF files are currently supported for extraction (images supported via Textract but without coordinate data).

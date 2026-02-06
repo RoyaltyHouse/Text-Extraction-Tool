@@ -101,9 +101,12 @@ def textract_lines_by_page_from_file(file, bucket=S3_BUCKET):
         if b.get("BlockType") == "LINE" and "Text" in b:
             page_num = b.get("Page", 1)
             text = b["Text"]
-
             page_text_dict.setdefault(page_num, []).append(text)
 
+        # Collect WORD blocks for precise coordinate matching
+        elif b.get("BlockType") == "WORD" and "Text" in b:
+            page_num = b.get("Page", 1)
+            text = b["Text"]
             bbox = b.get("Geometry", {}).get("BoundingBox", {})
             if bbox:
                 page_blocks_dict.setdefault(page_num, []).append({

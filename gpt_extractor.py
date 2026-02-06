@@ -17,19 +17,51 @@ def _bbox_distance(bbox1, bbox2):
     return ((cx1 - cx2) ** 2 + (cy1 - cy2) ** 2) ** 0.5
 
 
+def _merge_bboxes(bboxes):
+    """Merge multiple bounding boxes into one encompassing rectangle."""
+    if not bboxes:
+        return None
+    if len(bboxes) == 1:
+        return bboxes[0]
+
+    left = min(b["Left"] for b in bboxes)
+    top = min(b["Top"] for b in bboxes)
+    right = max(b["Left"] + b["Width"] for b in bboxes)
+    bottom = max(b["Top"] + b["Height"] for b in bboxes)
+
+    return {
+        "Left": left,
+        "Top": top,
+        "Width": right - left,
+        "Height": bottom - top
+    }
+
+
 def _build_label_bbox_map(field_names, page_blocks):
-    """Single scan over page_blocks to locate every field label's bounding box."""
+    """Single scan over page_blocks to locate every field label's bounding box.
+
+    Works with WORD blocks by checking if any significant word from the field
+    name appears in the document.
+    """
     field_lowers = {name: name.lower().strip() for name in field_names}
     best_scores = {}
     label_bboxes = {}
 
     for block in page_blocks:
         block_text = block.get("text", "").lower().strip()
-        if not block_text:
+        if not block_text or len(block_text) < 2:
             continue
+
         for name, field_lower in field_lowers.items():
+            # Check for full field name in word
             if field_lower in block_text:
                 score = len(field_lower) / len(block_text)
+                if score > best_scores.get(name, 0):
+                    best_scores[name] = score
+                    label_bboxes[name] = block.get("bbox")
+            # Check if word is significant part of field name (e.g., "Artist" in "Artist Name")
+            elif block_text in field_lower and len(block_text) >= 4:
+                score = len(block_text) / len(field_lower) * 0.8
                 if score > best_scores.get(name, 0):
                     best_scores[name] = score
                     label_bboxes[name] = block.get("bbox")
@@ -38,48 +70,76 @@ def _build_label_bbox_map(field_names, page_blocks):
 
 
 def find_evidence_location(evidence_text, page_blocks, label_bbox=None):
-    """Find the bounding box for the given evidence text in the page blocks.
+    """Find the bounding box for the given evidence text in WORD blocks.
 
-    When label_bbox is provided and the value appears more than once on the
-    page, uses proximity to the label to pick the correct occurrence.
+    Expects page_blocks to be pre-sorted in reading order. Searches for
+    sequences of consecutive words that match the value, merges their bboxes
+    for precise highlighting. Uses label proximity to disambiguate duplicates.
     """
     if not evidence_text or not page_blocks:
         return None
 
     evidence_lower = evidence_text.lower().strip()
-    matches = []
+    evidence_len = len(evidence_lower)
+    # Cap sequence length to evidence word count + small buffer
+    max_words = len(evidence_lower.split()) + 3
 
-    for block in page_blocks:
-        block_text = block.get("text", "").lower().strip()
-        if not block_text:
-            continue
+    matches = []  # (start_index, length, score)
+    num_blocks = len(page_blocks)
 
-        score = 0
-        # Check for exact substring match
-        if evidence_lower in block_text:
-            score = len(evidence_lower) / len(block_text)
-        # Check for reverse match (block is substring of evidence)
-        elif block_text in evidence_lower and len(block_text) > 10:
-            score = len(block_text) / len(evidence_lower)
+    for i in range(num_blocks):
+        combined = ""
 
-        if score > 0 and block.get("bbox"):
-            matches.append((block, score))
+        for length in range(1, min(max_words + 1, num_blocks - i + 1)):
+            word = page_blocks[i + length - 1].get("text", "")
+            # Build combined text incrementally instead of re-joining
+            combined = f"{combined} {word}" if combined else word
+            combined_lower = combined.lower().strip()
+
+            score = 0
+            if evidence_lower == combined_lower:
+                score = 1.0
+            elif evidence_lower in combined_lower:
+                score = evidence_len / len(combined_lower)
+            elif combined_lower in evidence_lower and len(combined_lower) > 3:
+                score = len(combined_lower) / evidence_len * 0.7
+
+            if score > 0.3:
+                matches.append((i, length, score))
+
+            # Exact match — extending further can only be worse
+            if score == 1.0:
+                break
+            # Combined text already much longer than evidence — stop extending
+            if len(combined_lower) > evidence_len * 1.5 and score == 0:
+                break
 
     if not matches:
         return None
 
-    if len(matches) == 1:
-        return matches[0][0]["bbox"]
+    # Find the best score and shortest length among top-scoring matches
+    best_score = max(m[2] for m in matches)
+    top_matches = [
+        m for m in matches
+        if m[2] >= best_score * 0.95
+    ]
+    best_length = min(m[1] for m in top_matches)
+    top_matches = [m for m in top_matches if m[1] <= best_length + 2]
 
-    # Multiple matches — try to disambiguate using the label position
-    if not label_bbox:
-        return max(matches, key=lambda m: m[1])[0]["bbox"]
+    def _extract_bbox(start, length):
+        bboxes = [page_blocks[start + j]["bbox"]
+                   for j in range(length) if page_blocks[start + j].get("bbox")]
+        return _merge_bboxes(bboxes)
 
-    # Among competitively-scored matches, pick the one closest to the label
-    best_score = max(m[1] for m in matches)
-    top_matches = [(b, s) for b, s in matches if s >= best_score * 0.8]
-    closest = min(top_matches, key=lambda m: _bbox_distance(m[0]["bbox"], label_bbox))
-    return closest[0]["bbox"]
+    if len(top_matches) == 1 or not label_bbox:
+        best = min(top_matches, key=lambda m: (-m[2], m[1]))
+        return _extract_bbox(best[0], best[1])
+
+    # Multiple matches — pick closest to the field label
+    closest = min(top_matches, key=lambda m: _bbox_distance(
+        _extract_bbox(m[0], m[1]) or {}, label_bbox
+    ))
+    return _extract_bbox(closest[0], closest[1])
 
 def extract_field_information(page_text, page_blocks=None):
     prompt = build_final_document_prompt(page_text)
@@ -124,14 +184,19 @@ def extract_field_information(page_text, page_blocks=None):
 
             for page_num, fields in fields_by_page.items():
                 blocks_on_page = page_blocks.get(page_num, [])
+                # Sort once per page for reading order
+                sorted_blocks = sorted(blocks_on_page, key=lambda b: (
+                    b.get("bbox", {}).get("Top", 0),
+                    b.get("bbox", {}).get("Left", 0)
+                ))
                 # Single scan to find all label positions for this page
-                label_map = _build_label_bbox_map([name for name, _ in fields], blocks_on_page)
+                label_map = _build_label_bbox_map([name for name, _ in fields], sorted_blocks)
 
                 for field_name, field_data in fields:
                     value = field_data.get("value")
                     if not isinstance(value, str):
                         continue
-                    bbox = find_evidence_location(value, blocks_on_page, label_bbox=label_map.get(field_name))
+                    bbox = find_evidence_location(value, sorted_blocks, label_bbox=label_map.get(field_name))
                     field_data["coords"] = bbox
         except Exception as e:
             print(f"[WARNING] Failed to add coordinates: {str(e)}")
