@@ -33,7 +33,7 @@ A Flask-based API for extracting structured information from PDF documents (musi
 3. **Set up environment variables:**
    - Create a `.env` file in the project root with your OpenAI API key:
      ```env
-     OPENAI_API_KEY=your_openai_api_key_here
+     OPENAI_API_KEY2=your_openai_api_key_here
      ```
 
 4. **Configure AWS S3:**
@@ -50,7 +50,7 @@ A Flask-based API for extracting structured information from PDF documents (musi
 1. **Use the Lambda layer** (`lambda-layer-final-working.zip`) that contains all dependencies
 2. **Upload the Lambda function code** (without local dependencies)
 3. **Add environment variables** in Lambda console:
-   - `OPENAI_API_KEY`: Your OpenAI API key
+   - `OPENAI_API_KEY2`: Your OpenAI API key
 
 ## Running the App
 
@@ -117,13 +117,17 @@ The Flask server will start on `http://127.0.0.1:5000/` by default.
 - No local dependencies needed
 - Optimized for serverless execution
 
+## Known Limitations
+- **API Gateway timeout**: REST API has a hard 29-second timeout. Documents that take longer to process through Textract + OpenAI will return a 504 Gateway Timeout. For longer processing times, consider switching to Lambda function URLs (up to 15 min timeout).
+- **File upload size**: Direct uploads via `/extract` are base64-encoded through API Gateway, so PDFs over ~4.5 MB will exceed Lambda's 6 MB payload limit. Use `/extract_from_url` for larger files.
+- **Multi-line coordinate matching**: Bounding box coordinates match a single Textract LINE block. Fields spanning multiple lines return the best-matching single line's bbox.
+
 ## Notes
 - Only PDF files are currently supported for extraction (images supported via Textract but without coordinate data).
-- Requires a valid OpenAI API key for GPT-based extraction.
+- Requires a valid OpenAI API key (`OPENAI_API_KEY2` environment variable).
 - Requires AWS Textract for OCR and bounding box extraction.
 - Files are temporarily stored in AWS S3 bucket for Textract processing.
 - Field descriptions are stored locally in `field_descriptions.json`.
-- The code automatically detects whether it's running locally or in Lambda.
 - Coordinates are normalized (0.0-1.0 range) - multiply by page dimensions to get pixel coordinates.
    - `Left`: Distance from left edge (0.0 = left, 1.0 = right)
    - `Top`: Distance from top edge (0.0 = top, 1.0 = bottom)

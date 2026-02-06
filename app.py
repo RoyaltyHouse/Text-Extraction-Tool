@@ -60,12 +60,9 @@ def uploads():
             if "error" in extraction_result:
                 return jsonify(extraction_result), 400
 
-            # Extract text and blocks from result
-            # Note: blocks are only used internally, never returned to client
             page_text_dict = extraction_result.get("text", {})
             page_blocks_dict = extraction_result.get("blocks", {})
 
-            # Pass both to extraction (blocks used for coordinate matching only)
             preview = extract_text_from_pdf(page_text_dict, page_blocks_dict)
             results.append({
                 'file': file.filename,
@@ -91,7 +88,6 @@ def uploads():
                 "error": "File type not supported. Only PDF, JPEG, JGE, PNG is allowed."
             })
     if combined_text:
-        # For images, we don't have blocks, so pass None
         preview = extract_text_from_pdf(combined_text, blocks=None)
         results.append({
             'file': ", ".join(file_list),
@@ -189,13 +185,10 @@ def extract_from_url():
         if "error" in extraction_result:
             return jsonify(extraction_result), 400
 
-        # Extract text and blocks from result
         page_text_dict = extraction_result.get("text", {})
         page_blocks_dict = extraction_result.get("blocks", {})
 
-        # Format preview with existing utility
         preview = extract_text_from_pdf(page_text_dict, page_blocks_dict)
-        # databaseResponse = save_data_to_database(preview,filename )
         return jsonify({
             "url": file_url,
             "file": filename,

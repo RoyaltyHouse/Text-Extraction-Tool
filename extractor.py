@@ -18,7 +18,6 @@ def extract_text_from_pdf(text, blocks=None):
         return {"error": "No text provided for extraction"}
     print("[DEBUG] Extraction started for text")
 
-    # Pass both text and blocks to GPT extractor
     open_ai_Data = extract_field_information(text, blocks)
 
     if isinstance(open_ai_Data, dict):
@@ -95,22 +94,18 @@ def textract_lines_by_page_from_file(file, bucket=S3_BUCKET):
         blocks.extend(resp["Blocks"])
         next_token = resp.get("NextToken")
 
-    # Collect lines AND blocks by page
     page_text_dict = {}
-    page_blocks_dict = {}  # NEW: Store block metadata
+    page_blocks_dict = {}
 
     for b in blocks:
         if b.get("BlockType") == "LINE" and "Text" in b:
             page_num = b.get("Page", 1)
             text = b["Text"]
 
-            # Store text (existing functionality)
             page_text_dict.setdefault(page_num, []).append(text)
 
-            # NEW: Store block metadata with bbox (text needed for matching)
-            # Only store if bbox exists to reduce memory usage
             bbox = b.get("Geometry", {}).get("BoundingBox", {})
-            if bbox:  # Only store blocks that have bounding boxes
+            if bbox:
                 page_blocks_dict.setdefault(page_num, []).append({
                     "text": text,
                     "bbox": bbox
