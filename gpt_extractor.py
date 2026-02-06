@@ -6,7 +6,7 @@ from openai import OpenAI
 
 load_dotenv()
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY2"))
 
 def extract_field_information(page_text):
     prompt=build_final_document_prompt(page_text)
