@@ -115,7 +115,7 @@ def textract_lines_by_page_from_file(file, bucket=S3_BUCKET):
             })
 
     if not any(page_text_dict.values()):
-        return {"error": "No extractable text found in the document."}
+        return jsonify({"error": "No extractable text found in the document."}), 400
     else:
         sample_preview = []
         for lines in page_text_dict.values():

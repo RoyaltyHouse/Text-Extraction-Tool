@@ -45,6 +45,10 @@ def uploads():
             if isinstance(extraction_result, tuple) or not isinstance(extraction_result, dict):
                 return extraction_result
 
+            # Check if it's an error response
+            if "error" in extraction_result:
+                return jsonify(extraction_result), 400
+
             # Extract text and blocks from result
             page_text_dict = extraction_result.get("text", {})
             page_blocks_dict = extraction_result.get("blocks", {})
@@ -166,6 +170,12 @@ def extract_from_url():
         downloaded = _DownloadedFileAdapter(filename, content)
         # Reuse the same Textract flow
         extraction_result = textract_lines_by_page_from_file(downloaded, bucket=S3_BUCKET)
+
+        # Check if it's an error response
+        if isinstance(extraction_result, tuple):
+            return extraction_result
+        if "error" in extraction_result:
+            return jsonify(extraction_result), 400
 
         # Extract text and blocks from result
         page_text_dict = extraction_result.get("text", {})

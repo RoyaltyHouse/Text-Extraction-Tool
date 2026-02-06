@@ -77,27 +77,40 @@ def extract_field_information(page_text, page_blocks=None):
             lines = lines[:-1]
         content = '\n'.join(lines)
 
-    extracted_fields = json.loads(content)
+    try:
+        extracted_fields = json.loads(content)
+    except json.JSONDecodeError as e:
+        print(f"[ERROR] Failed to parse GPT response as JSON: {str(e)}")
+        print(f"[ERROR] Raw content: {content}")
+        return {"error": f"Failed to parse extraction results: {str(e)}"}
 
     # NEW: Add coordinates to each field
     if page_blocks:
-        for field_name, field_data in extracted_fields.items():
-            if isinstance(field_data, dict) and field_data.get("value") and field_data.get("value") != "not found":
-                page_num = field_data.get("page_number")
-                value = field_data.get("value")
+        try:
+            for field_name, field_data in extracted_fields.items():
+                if isinstance(field_data, dict) and field_data.get("value") and field_data.get("value") != "not found":
+                    page_num = field_data.get("page_number")
+                    value = field_data.get("value")
 
-                # Skip non-string values (e.g. Lawyer Information has a nested dict)
-                if not isinstance(value, str):
-                    continue
+                    # Skip non-string values (e.g. Lawyer Information has a nested dict)
+                    if not isinstance(value, str):
+                        continue
 
-                # Get blocks for this specific page
-                blocks_on_page = page_blocks.get(page_num, [])
+                    # Skip if page_num is None or invalid
+                    if page_num is None or not isinstance(page_num, int):
+                        continue
 
-                # Find coordinates for this value
-                bbox = find_evidence_location(value, blocks_on_page)
+                    # Get blocks for this specific page
+                    blocks_on_page = page_blocks.get(page_num, [])
 
-                # Add coords to response (will be None if not found)
-                field_data["coords"] = bbox
+                    # Find coordinates for this value
+                    bbox = find_evidence_location(value, blocks_on_page)
+
+                    # Add coords to response (will be None if not found)
+                    field_data["coords"] = bbox
+        except Exception as e:
+            # Log but don't fail - coordinates are optional
+            print(f"[WARNING] Failed to add coordinates: {str(e)}")
 
     return extracted_fields
 
