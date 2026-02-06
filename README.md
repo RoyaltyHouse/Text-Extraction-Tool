@@ -1,12 +1,13 @@
-# Text Extraction Tool
+# Contract Parser
 
 A Flask-based API for extracting structured information from PDF documents (music royalty contracts) using OpenAI GPT and custom field logic.
 
 ## Features
 - Upload PDF files and extract structured text fields
+- Extract bounding box coordinates for each field (enables accurate PDF highlighting)
 - Extract from direct file upload or from a file URL (Google Drive supported)
 - Customizable field extraction using OpenAI GPT
-- S3-based file storage
+- S3-based file storage with AWS Textract integration
 - Supports both local development and AWS Lambda deployment
 
 ## Requirements
@@ -66,14 +67,32 @@ The Flask server will start on `http://127.0.0.1:5000/` by default.
 ## API Endpoints
 
 ### 1. Upload a PDF file
-- **POST** `/upload`
+- **POST** `/extract`
 - Form-data: `file` (PDF)
-- Returns: Extracted text (file stored in S3)
+- Example query params: `artist_id`, `original_document_id`
+- Returns: Extracted fields with bounding box coordinates for PDF highlighting
+
+**Response format:**
+```json
+{
+  "Artist Name": {
+    "value": "A$AP Mob",
+    "page_number": 1,
+    "coords": {
+      "Left": 0.1234,
+      "Top": 0.2567,
+      "Width": 0.3456,
+      "Height": 0.0234
+    }
+  }
+}
+```
 
 ### 2. Extract from a file URL
 - **POST** `/extract_from_url`
 - JSON body: `{ "url": "<file_url>" }`
-- Returns: Extracted text
+- Query params: `artist_id`, `original_document_id`
+- Returns: Same format as above with coordinates
 
 ### 3. Get field descriptions
 - **GET** `/get_fields`
@@ -99,11 +118,17 @@ The Flask server will start on `http://127.0.0.1:5000/` by default.
 - Optimized for serverless execution
 
 ## Notes
-- Only PDF files are currently supported for extraction.
+- Only PDF files are currently supported for extraction (images supported via Textract but without coordinate data).
 - Requires a valid OpenAI API key for GPT-based extraction.
-- Files are stored in AWS S3 bucket.
+- Requires AWS Textract for OCR and bounding box extraction.
+- Files are temporarily stored in AWS S3 bucket for Textract processing.
 - Field descriptions are stored locally in `field_descriptions.json`.
 - The code automatically detects whether it's running locally or in Lambda.
+- Coordinates are normalized (0.0-1.0 range) - multiply by page dimensions to get pixel coordinates.
+   - `Left`: Distance from left edge (0.0 = left, 1.0 = right)
+   - `Top`: Distance from top edge (0.0 = top, 1.0 = bottom)
+   - `Width`: Width as percentage of page width
+   - `Height`: Height as percentage of page height
 
 ## License
 MIT 
