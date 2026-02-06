@@ -13,20 +13,27 @@ s3 = boto3.client('s3')
 textract = boto3.client('textract')
 
 
-def extract_text_from_pdf(text):
-    if( text is None):
+def extract_text_from_pdf(text, blocks=None):
+    if text is None:
         return {"error": "No text provided for extraction"}
     print("[DEBUG] Extraction started for text")
-    open_ai_Data = extract_field_information(text)
+
+    # Pass both text and blocks to GPT extractor
+    open_ai_Data = extract_field_information(text, blocks)
+
     if isinstance(open_ai_Data, dict):
         return open_ai_Data
     return json.loads(open_ai_Data)
 
 
 def textract_text_image_by_image(file):
-    extract = textract_lines_by_page_from_file(file, bucket=S3_BUCKET)
-    if isinstance(extract, tuple) or not isinstance(extract, dict):
-                return extract  # This handles both (jsonify_dict, 200) and just a Response object
+    extraction_result = textract_lines_by_page_from_file(file, bucket=S3_BUCKET)
+    if isinstance(extraction_result, tuple) or not isinstance(extraction_result, dict):
+        return extraction_result
+
+    # Handle new structure
+    extract = extraction_result.get("text", {})
+
     if isinstance(extract, dict):
         # If nested like {1: [...]} and only one page, unwrap it
         if len(extract) == 1:
@@ -88,12 +95,24 @@ def textract_lines_by_page_from_file(file, bucket=S3_BUCKET):
         blocks.extend(resp["Blocks"])
         next_token = resp.get("NextToken")
 
-    # Collect lines by page
+    # Collect lines AND blocks by page
     page_text_dict = {}
+    page_blocks_dict = {}  # NEW: Store block metadata
+
     for b in blocks:
         if b.get("BlockType") == "LINE" and "Text" in b:
             page_num = b.get("Page", 1)
-            page_text_dict.setdefault(page_num, []).append(b["Text"])
+            text = b["Text"]
+
+            # Store text (existing functionality)
+            page_text_dict.setdefault(page_num, []).append(text)
+
+            # NEW: Store block metadata with bbox
+            page_blocks_dict.setdefault(page_num, []).append({
+                "text": text,
+                "page": page_num,
+                "bbox": b.get("Geometry", {}).get("BoundingBox", {})
+            })
 
     if not any(page_text_dict.values()):
         return {"error": "No extractable text found in the document."}
@@ -104,7 +123,10 @@ def textract_lines_by_page_from_file(file, bucket=S3_BUCKET):
             if len(sample_preview) >= 5:
                 break
         print("[DEBUG] Sample extracted lines:", sample_preview[:5])
-        return page_text_dict
+        return {
+            "text": page_text_dict,
+            "blocks": page_blocks_dict
+        }
     
 
 
