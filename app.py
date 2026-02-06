@@ -52,11 +52,18 @@ def uploads():
         filename = file.filename.lower()
         if filename.endswith('.pdf'):
             print(f"[DEBUG] Received PDF file: {file.filename}")
-            page_text_dict = textract_lines_by_page_from_file(file, bucket=S3_BUCKET)
-            if isinstance(page_text_dict, tuple) or not isinstance(page_text_dict, dict):
-                return page_text_dict  # This handles both (jsonify_dict, 200) and just a Response object
+            extraction_result = textract_lines_by_page_from_file(file, bucket=S3_BUCKET)
+            if isinstance(extraction_result, tuple) or not isinstance(extraction_result, dict):
+                return extraction_result
 
-            preview = extract_text_from_pdf(page_text_dict)
+            # Check if it's an error response
+            if "error" in extraction_result:
+                return jsonify(extraction_result), 400
+
+            page_text_dict = extraction_result.get("text", {})
+            page_blocks_dict = extraction_result.get("blocks", {})
+
+            preview = extract_text_from_pdf(page_text_dict, page_blocks_dict)
             results.append({
                 'file': file.filename,
                 "artist_id":artist_id,
@@ -81,7 +88,7 @@ def uploads():
                 "error": "File type not supported. Only PDF, JPEG, JGE, PNG is allowed."
             })
     if combined_text:
-        preview = extract_text_from_pdf(combined_text)
+        preview = extract_text_from_pdf(combined_text, blocks=None)
         results.append({
             'file': ", ".join(file_list),
             "artist_id":artist_id,
@@ -170,10 +177,18 @@ def extract_from_url():
                     f.write(self._data)
         downloaded = _DownloadedFileAdapter(filename, content)
         # Reuse the same Textract flow
-        page_text_dict = textract_lines_by_page_from_file(downloaded, bucket=S3_BUCKET)
-        # Format preview with existing utility
-        preview = extract_text_from_pdf(page_text_dict)
-        # databaseResponse = save_data_to_database(preview,filename )
+        extraction_result = textract_lines_by_page_from_file(downloaded, bucket=S3_BUCKET)
+
+        # Check if it's an error response
+        if isinstance(extraction_result, tuple):
+            return extraction_result
+        if "error" in extraction_result:
+            return jsonify(extraction_result), 400
+
+        page_text_dict = extraction_result.get("text", {})
+        page_blocks_dict = extraction_result.get("blocks", {})
+
+        preview = extract_text_from_pdf(page_text_dict, page_blocks_dict)
         return jsonify({
             "url": file_url,
             "file": filename,
