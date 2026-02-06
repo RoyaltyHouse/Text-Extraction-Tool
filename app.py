@@ -5,6 +5,7 @@ import boto3,time
 import requests
 import urllib.parse
 import re
+import traceback
 from extractor import extract_text_from_pdf,textract_text_image_by_image,textract_lines_by_page_from_file
 from flask_cors import CORS
 import os
@@ -13,6 +14,16 @@ from botocore.exceptions import NoCredentialsError
 
 app = Flask(__name__)
 CORS(app)
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    """Catch-all: return the real error in JSON so we can see it in the response body."""
+    tb = traceback.format_exc()
+    return jsonify({
+        "error": str(e),
+        "type": type(e).__name__,
+        "traceback": tb
+    }), 500
 
 # S3 configuration
 S3_BUCKET = os.getenv("BUCKET_NAME")  # Replace with your actual bucket name
