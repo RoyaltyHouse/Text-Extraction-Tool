@@ -6,7 +6,7 @@ from openai import OpenAI
 
 load_dotenv()
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY2"))
 
 def find_evidence_location(evidence_text, page_blocks):
     """
