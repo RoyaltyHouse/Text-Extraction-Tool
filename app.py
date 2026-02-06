@@ -5,6 +5,7 @@ import boto3,time
 import requests
 import urllib.parse
 import re
+import traceback
 from extractor import extract_text_from_pdf,textract_text_image_by_image,textract_lines_by_page_from_file
 from flask_cors import CORS
 import os
@@ -13,6 +14,16 @@ from botocore.exceptions import NoCredentialsError
 
 app = Flask(__name__)
 CORS(app)
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    """Catch-all: return the real error in JSON so we can see it in the response body."""
+    tb = traceback.format_exc()
+    return jsonify({
+        "error": str(e),
+        "type": type(e).__name__,
+        "traceback": tb
+    }), 500
 
 # S3 configuration
 S3_BUCKET = os.getenv("BUCKET_NAME")  # Replace with your actual bucket name
@@ -41,16 +52,11 @@ def uploads():
         filename = file.filename.lower()
         if filename.endswith('.pdf'):
             print(f"[DEBUG] Received PDF file: {file.filename}")
-            extraction_result = textract_lines_by_page_from_file(file, bucket=S3_BUCKET)
-            if isinstance(extraction_result, tuple) or not isinstance(extraction_result, dict):
-                return extraction_result
+            page_text_dict = textract_lines_by_page_from_file(file, bucket=S3_BUCKET)
+            if isinstance(page_text_dict, tuple) or not isinstance(page_text_dict, dict):
+                return page_text_dict  # This handles both (jsonify_dict, 200) and just a Response object
 
-            # Extract text and blocks from result
-            page_text_dict = extraction_result.get("text", {})
-            page_blocks_dict = extraction_result.get("blocks", {})
-
-            # Pass both to extraction
-            preview = extract_text_from_pdf(page_text_dict, page_blocks_dict)
+            preview = extract_text_from_pdf(page_text_dict)
             results.append({
                 'file': file.filename,
                 "artist_id":artist_id,
@@ -75,8 +81,7 @@ def uploads():
                 "error": "File type not supported. Only PDF, JPEG, JGE, PNG is allowed."
             })
     if combined_text:
-        # For images, we don't have blocks, so pass None
-        preview = extract_text_from_pdf(combined_text, blocks=None)
+        preview = extract_text_from_pdf(combined_text)
         results.append({
             'file': ", ".join(file_list),
             "artist_id":artist_id,
@@ -165,14 +170,9 @@ def extract_from_url():
                     f.write(self._data)
         downloaded = _DownloadedFileAdapter(filename, content)
         # Reuse the same Textract flow
-        extraction_result = textract_lines_by_page_from_file(downloaded, bucket=S3_BUCKET)
-
-        # Extract text and blocks from result
-        page_text_dict = extraction_result.get("text", {})
-        page_blocks_dict = extraction_result.get("blocks", {})
-
+        page_text_dict = textract_lines_by_page_from_file(downloaded, bucket=S3_BUCKET)
         # Format preview with existing utility
-        preview = extract_text_from_pdf(page_text_dict, page_blocks_dict)
+        preview = extract_text_from_pdf(page_text_dict)
         # databaseResponse = save_data_to_database(preview,filename )
         return jsonify({
             "url": file_url,
@@ -268,7 +268,7 @@ def lambda_handler(event, context):
                 'Content-Type': 'application/json'
             }
         }
-    
+
 
 json_str = {
     "Alternative Counterparties": {
