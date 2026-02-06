@@ -107,12 +107,14 @@ def textract_lines_by_page_from_file(file, bucket=S3_BUCKET):
             # Store text (existing functionality)
             page_text_dict.setdefault(page_num, []).append(text)
 
-            # NEW: Store block metadata with bbox
-            page_blocks_dict.setdefault(page_num, []).append({
-                "text": text,
-                "page": page_num,
-                "bbox": b.get("Geometry", {}).get("BoundingBox", {})
-            })
+            # NEW: Store block metadata with bbox (text needed for matching)
+            # Only store if bbox exists to reduce memory usage
+            bbox = b.get("Geometry", {}).get("BoundingBox", {})
+            if bbox:  # Only store blocks that have bounding boxes
+                page_blocks_dict.setdefault(page_num, []).append({
+                    "text": text,
+                    "bbox": bbox
+                })
 
     if not any(page_text_dict.values()):
         return jsonify({"error": "No extractable text found in the document."}), 400

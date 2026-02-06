@@ -50,10 +50,11 @@ def uploads():
                 return jsonify(extraction_result), 400
 
             # Extract text and blocks from result
+            # Note: blocks are only used internally, never returned to client
             page_text_dict = extraction_result.get("text", {})
             page_blocks_dict = extraction_result.get("blocks", {})
 
-            # Pass both to extraction
+            # Pass both to extraction (blocks used for coordinate matching only)
             preview = extract_text_from_pdf(page_text_dict, page_blocks_dict)
             results.append({
                 'file': file.filename,
