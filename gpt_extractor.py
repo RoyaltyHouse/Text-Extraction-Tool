@@ -184,9 +184,11 @@ def extract_field_information(page_text, page_blocks=None):
 
             for page_num, fields in fields_by_page.items():
                 blocks_on_page = page_blocks.get(page_num, [])
-                # Sort once per page for reading order
+                # Sort once per page for reading order — bucket by row first
+                # so words on the same line stay consecutive despite tiny
+                # Top-value differences from Textract
                 sorted_blocks = sorted(blocks_on_page, key=lambda b: (
-                    b.get("bbox", {}).get("Top", 0),
+                    round(b.get("bbox", {}).get("Top", 0) * 100),
                     b.get("bbox", {}).get("Left", 0)
                 ))
                 # Single scan to find all label positions for this page
