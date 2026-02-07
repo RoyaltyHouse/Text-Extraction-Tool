@@ -69,30 +69,93 @@ def _build_label_bbox_map(field_names, page_blocks):
     return label_bboxes
 
 
+LONG_VALUE_THRESHOLD = 8  # words — above this, use anchor matching
+
+
+def _find_anchor(anchor_text, page_blocks):
+    """Find all starting indices where a short word sequence appears in page_blocks.
+
+    Returns list of start indices sorted by match quality.
+    """
+    anchor_lower = anchor_text.lower().strip()
+    anchor_word_count = len(anchor_lower.split())
+    num_blocks = len(page_blocks)
+    hits = []
+
+    for i in range(num_blocks - anchor_word_count + 1):
+        combined = ""
+        for j in range(anchor_word_count):
+            word = page_blocks[i + j].get("text", "")
+            combined = f"{combined} {word}" if combined else word
+        combined_lower = combined.lower().strip()
+
+        if anchor_lower == combined_lower:
+            hits.append((i, 1.0))
+        elif anchor_lower in combined_lower:
+            hits.append((i, len(anchor_lower) / len(combined_lower)))
+
+    # Best scores first
+    hits.sort(key=lambda h: -h[1])
+    return hits
+
+
 def find_evidence_location(evidence_text, page_blocks, label_bbox=None):
     """Find the bounding box for the given evidence text in WORD blocks.
 
-    Expects page_blocks to be pre-sorted in reading order. Searches for
-    sequences of consecutive words that match the value, merges their bboxes
-    for precise highlighting. Uses label proximity to disambiguate duplicates.
+    Expects page_blocks to be pre-sorted in reading order.
+    - Short values (<=8 words): sequence matching with label proximity.
+    - Long values (>8 words): anchor on first/last few words and span between.
     """
     if not evidence_text or not page_blocks:
         return None
 
     evidence_lower = evidence_text.lower().strip()
+    evidence_words = evidence_lower.split()
     evidence_len = len(evidence_lower)
-    # Cap sequence length to evidence word count + small buffer
-    max_words = len(evidence_lower.split()) + 3
-
-    matches = []  # (start_index, length, score)
     num_blocks = len(page_blocks)
+
+    # ── Long values: anchor approach ──
+    if len(evidence_words) > LONG_VALUE_THRESHOLD:
+        anchor_size = min(5, len(evidence_words) // 2)
+        start_text = " ".join(evidence_words[:anchor_size])
+        end_text = " ".join(evidence_words[-anchor_size:])
+
+        start_hits = _find_anchor(start_text, page_blocks)
+        end_hits = _find_anchor(end_text, page_blocks)
+
+        if start_hits and end_hits:
+            # Try each start/end combo to find a valid span
+            for start_idx, _ in start_hits:
+                for end_idx, _ in end_hits:
+                    end_pos = end_idx + anchor_size
+                    if end_idx >= start_idx and end_pos - start_idx <= len(evidence_words) * 2:
+                        bboxes = [page_blocks[j]["bbox"]
+                                  for j in range(start_idx, min(end_pos, num_blocks))
+                                  if page_blocks[j].get("bbox")]
+                        if bboxes:
+                            return _merge_bboxes(bboxes)
+
+        # Fallback: start anchor found, estimate span from evidence word count
+        if start_hits:
+            start_idx = start_hits[0][0]
+            span = min(len(evidence_words), num_blocks - start_idx)
+            bboxes = [page_blocks[start_idx + j]["bbox"]
+                      for j in range(span)
+                      if page_blocks[start_idx + j].get("bbox")]
+            if bboxes:
+                return _merge_bboxes(bboxes)
+
+        # Last resort: fall through to short-value matching below
+
+    # ── Short values: sequence matching ──
+    max_words = len(evidence_words) + 3
+    matches = []  # (start_index, length, score)
 
     for i in range(num_blocks):
         combined = ""
 
         for length in range(1, min(max_words + 1, num_blocks - i + 1)):
             word = page_blocks[i + length - 1].get("text", "")
-            # Build combined text incrementally instead of re-joining
             combined = f"{combined} {word}" if combined else word
             combined_lower = combined.lower().strip()
 
@@ -107,22 +170,16 @@ def find_evidence_location(evidence_text, page_blocks, label_bbox=None):
             if score > 0.3:
                 matches.append((i, length, score))
 
-            # Exact match — extending further can only be worse
             if score == 1.0:
                 break
-            # Combined text already much longer than evidence — stop extending
             if len(combined_lower) > evidence_len * 1.5 and score == 0:
                 break
 
     if not matches:
         return None
 
-    # Find the best score and shortest length among top-scoring matches
     best_score = max(m[2] for m in matches)
-    top_matches = [
-        m for m in matches
-        if m[2] >= best_score * 0.95
-    ]
+    top_matches = [m for m in matches if m[2] >= best_score * 0.95]
     best_length = min(m[1] for m in top_matches)
     top_matches = [m for m in top_matches if m[1] <= best_length + 2]
 
@@ -135,7 +192,6 @@ def find_evidence_location(evidence_text, page_blocks, label_bbox=None):
         best = min(top_matches, key=lambda m: (-m[2], m[1]))
         return _extract_bbox(best[0], best[1])
 
-    # Multiple matches — pick closest to the field label
     closest = min(top_matches, key=lambda m: _bbox_distance(
         _extract_bbox(m[0], m[1]) or {}, label_bbox
     ))
