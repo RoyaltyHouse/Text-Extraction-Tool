@@ -6,6 +6,7 @@ import requests
 import urllib.parse
 import re
 import traceback
+import uuid
 from extractor import extract_text_from_pdf,textract_text_image_by_image,textract_lines_by_page_from_file
 from flask_cors import CORS
 import os
@@ -131,17 +132,56 @@ def _normalize_to_direct_download(url: str) -> str:
     except Exception:
         return url
 
+@app.route('/presigned-upload-url', methods=['POST'])
+def presigned_upload_url():
+    data = request.get_json(force=True)
+    filename = data.get('filename')
+    content_type = data.get('content_type', 'application/pdf')
+
+    if not filename:
+        return jsonify({"error": "Missing 'filename' in request body"}), 400
+
+    ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+    if ext not in ALLOWED_EXTS:
+        return jsonify({"error": f"Unsupported file type '.{ext}'. Allowed: {', '.join(ALLOWED_EXTS)}"}), 400
+
+    s3_key = f"uploads/{uuid.uuid4()}/{filename}"
+
+    upload_url = s3.generate_presigned_url(
+        'put_object',
+        Params={
+            'Bucket': S3_BUCKET,
+            'Key': s3_key,
+            'ContentType': content_type
+        },
+        ExpiresIn=300
+    )
+
+    return jsonify({"upload_url": upload_url, "s3_key": s3_key}), 200
+
+
 # Extract text from file URL endpoint
 @app.route('/extract_from_url', methods=['POST'])
 def extract_from_url():
     artist_id = request.args.get("artist_id")
     original_document_id = request.args.get("original_document_id")
     data = request.get_json(force=True)
+    s3_key = data.get('s3_key')
     file_url = data.get('url')
-    # Normalize Google Drive share links to direct-download
-    file_url = _normalize_to_direct_download(file_url)
-    if not file_url:
-        return jsonify({"error": "Missing 'url' in request body"}), 400
+
+    if s3_key:
+        # Generate a pre-signed GET URL from the s3_key so the rest of the
+        # flow (download → Textract) works without any further changes
+        file_url = s3.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': S3_BUCKET, 'Key': s3_key},
+            ExpiresIn=300
+        )
+    elif file_url:
+        # Normalize Google Drive share links to direct-download
+        file_url = _normalize_to_direct_download(file_url)
+    else:
+        return jsonify({"error": "Missing 'url' or 's3_key' in request body"}), 400
     try:
         # Download the file (supports pre‑signed S3, public URLs, and normalized Google Drive links)
         resp = requests.get(file_url, stream=True, timeout=30)
