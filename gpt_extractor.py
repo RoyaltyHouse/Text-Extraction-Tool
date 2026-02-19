@@ -1,5 +1,5 @@
 from dotenv import load_dotenv
-from prompt import build_final_document_prompt
+from prompt import build_detection_prompt, build_final_document_prompt
 import os
 import json
 from openai import OpenAI
@@ -7,6 +7,9 @@ from openai import OpenAI
 load_dotenv()
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY2"))
+
+
+# ── Bounding box utilities ────────────────────────────────────────────────────
 
 def _bbox_distance(bbox1, bbox2):
     """Euclidean distance between the centres of two bounding boxes."""
@@ -197,66 +200,149 @@ def find_evidence_location(evidence_text, page_blocks, label_bbox=None):
     ))
     return _extract_bbox(closest[0], closest[1])
 
-def extract_field_information(page_text, page_blocks=None):
-    prompt = build_final_document_prompt(page_text)
-    print(f"[DEBUG] Sending prompt to OpenAI: {prompt[:100]}...")
+
+# ── Coordinate application ────────────────────────────────────────────────────
+
+def _apply_coords_to_fields(fields_dict, page_blocks, skip_keys=None):
+    """Apply bounding box coordinates to a flat dict of {field_name: field_data}.
+
+    Skips fields whose value is non-string (e.g. the nested dict returned for
+    Lawyer Information) and fields listed in skip_keys (e.g. "producers",
+    "producer_name").
+
+    Groups work by page so the expensive label-map scan runs once per page.
+    """
+    skip_keys = skip_keys or set()
+
+    # Group fields by page number, collecting only extractable string values
+    fields_by_page = {}
+    for field_name, field_data in fields_dict.items():
+        if field_name in skip_keys:
+            continue
+        if not isinstance(field_data, dict):
+            continue
+        value = field_data.get("value")
+        if not value or value == "not found":
+            continue
+        if not isinstance(value, str):
+            # Non-string values (e.g. Lawyer Information's nested dict) cannot
+            # be located in word blocks — skip coords entirely for those fields.
+            continue
+        page_num = field_data.get("page_number")
+        if page_num is not None and isinstance(page_num, int):
+            fields_by_page.setdefault(page_num, []).append((field_name, field_data))
+
+    for page_num, fields in fields_by_page.items():
+        blocks_on_page = page_blocks.get(page_num, [])
+        # Sort into reading order: row (bucketed by 1% of page height) then left
+        sorted_blocks = sorted(blocks_on_page, key=lambda b: (
+            round(b.get("bbox", {}).get("Top", 0) * 100),
+            b.get("bbox", {}).get("Left", 0)
+        ))
+        # Single scan to find all label positions for this page
+        label_map = _build_label_bbox_map([name for name, _ in fields], sorted_blocks)
+
+        for field_name, field_data in fields:
+            bbox = find_evidence_location(
+                field_data["value"], sorted_blocks, label_bbox=label_map.get(field_name)
+            )
+            field_data["coords"] = bbox
+
+
+# ── GPT calls ─────────────────────────────────────────────────────────────────
+
+def _strip_markdown_fences(content):
+    """Remove ```json / ``` fences that GPT occasionally wraps responses in."""
+    content = content.strip()
+    if content.startswith("```"):
+        lines = content.splitlines()
+        lines = lines[1:] if lines[0].startswith("```") else lines
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        content = "\n".join(lines)
+    return content
+
+
+def detect_producers(page_text):
+    """Pass 1: classify how many producers are party to this agreement.
+
+    Returns a list of producer name strings. Always returns at least one entry.
+    Falls back to ["Producer"] if detection fails or GPT returns unexpected output.
+    """
+    prompt = build_detection_prompt(page_text)
+    print("[DEBUG] Running producer detection pass...")
 
     response = client.chat.completions.create(
         model="gpt-4-1106-preview",
         messages=[
             {"role": "system", "content": "You are an intelligent document extraction assistant."},
-            {"role": "user", "content": prompt.strip()}
+            {"role": "user", "content": prompt}
+        ],
+        temperature=0.1  # low temp — this is a classification task
+    )
+
+    content = _strip_markdown_fences(response.choices[0].message.content)
+    print(f"[DEBUG] Detection response: {content}")
+
+    try:
+        result = json.loads(content)
+        producers = result.get("producers", [])
+        if producers and isinstance(producers, list) and all(isinstance(p, str) for p in producers):
+            return producers
+        print("[WARNING] Detection returned malformed producers list — defaulting to single producer")
+        return ["Producer"]
+    except json.JSONDecodeError as e:
+        print(f"[ERROR] Failed to parse detection response: {e}")
+        return ["Producer"]
+
+
+def extract_field_information(page_text, page_blocks=None, producers=None):
+    """Pass 2: extract all fields from the contract with producer context.
+
+    Args:
+        page_text:   dict of {page_num: [lines]} from Textract
+        page_blocks: dict of {page_num: [{text, bbox}]} WORD blocks for coords
+        producers:   list of producer name strings from detect_producers()
+
+    Returns a dict with universal fields at the top level and a "producers"
+    array containing per-producer field extractions, each with coords where
+    the value could be located in the document.
+    """
+    if not producers:
+        producers = ["Producer"]
+
+    prompt = build_final_document_prompt(page_text, producers)
+    print(f"[DEBUG] Sending extraction prompt to OpenAI ({len(producers)} producer(s))...")
+
+    response = client.chat.completions.create(
+        model="gpt-4-1106-preview",
+        messages=[
+            {"role": "system", "content": "You are an intelligent document extraction assistant."},
+            {"role": "user", "content": prompt}
         ],
         temperature=0.2
     )
 
-    content = response.choices[0].message.content
-    print(f"[DEBUG] Received response from OpenAI: {content.strip()}")
-
-    if content.strip().startswith('```'):
-        lines = content.strip().splitlines()
-        if lines[0].startswith('```'):
-            lines = lines[1:]
-        if lines and lines[-1].startswith('```'):
-            lines = lines[:-1]
-        content = '\n'.join(lines)
+    content = _strip_markdown_fences(response.choices[0].message.content)
+    print(f"[DEBUG] Received extraction response from OpenAI: {content[:300]}...")
 
     try:
         extracted_fields = json.loads(content)
     except json.JSONDecodeError as e:
-        print(f"[ERROR] Failed to parse GPT response as JSON: {str(e)}")
+        print(f"[ERROR] Failed to parse GPT response as JSON: {e}")
         print(f"[ERROR] Raw content: {content}")
-        return {"error": f"Failed to parse extraction results: {str(e)}"}
+        return {"error": f"Failed to parse extraction results: {e}"}
 
     if page_blocks:
         try:
-            # Group fields by page so we build one label map per page
-            fields_by_page = {}
-            for field_name, field_data in extracted_fields.items():
-                if isinstance(field_data, dict) and field_data.get("value") and field_data.get("value") != "not found":
-                    page_num = field_data.get("page_number")
-                    if page_num is not None and isinstance(page_num, int):
-                        fields_by_page.setdefault(page_num, []).append((field_name, field_data))
+            # Apply coords to universal top-level fields (skip the producers array)
+            _apply_coords_to_fields(extracted_fields, page_blocks, skip_keys={"producers"})
 
-            for page_num, fields in fields_by_page.items():
-                blocks_on_page = page_blocks.get(page_num, [])
-                # Sort once per page for reading order — bucket by row first
-                # so words on the same line stay consecutive despite tiny
-                # Top-value differences from Textract
-                sorted_blocks = sorted(blocks_on_page, key=lambda b: (
-                    round(b.get("bbox", {}).get("Top", 0) * 100),
-                    b.get("bbox", {}).get("Left", 0)
-                ))
-                # Single scan to find all label positions for this page
-                label_map = _build_label_bbox_map([name for name, _ in fields], sorted_blocks)
+            # Apply coords to each producer's individual fields
+            for producer in extracted_fields.get("producers", []):
+                _apply_coords_to_fields(producer, page_blocks, skip_keys={"producer_name"})
 
-                for field_name, field_data in fields:
-                    value = field_data.get("value")
-                    if not isinstance(value, str):
-                        continue
-                    bbox = find_evidence_location(value, sorted_blocks, label_bbox=label_map.get(field_name))
-                    field_data["coords"] = bbox
         except Exception as e:
-            print(f"[WARNING] Failed to add coordinates: {str(e)}")
+            print(f"[WARNING] Failed to add coordinates: {e}")
 
     return extracted_fields
