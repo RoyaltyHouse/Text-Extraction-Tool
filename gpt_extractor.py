@@ -18,7 +18,8 @@ def _bbox_distance(bbox1, bbox2):
 
 
 def _merge_bboxes(bboxes):
-    """Merge multiple bounding boxes into one encompassing rectangle."""
+    """Merge multiple bounding boxes into one encompassing rectangle.
+    Kept for label-proximity distance calculations only."""
     if not bboxes:
         return None
     if len(bboxes) == 1:
@@ -35,6 +36,46 @@ def _merge_bboxes(bboxes):
         "Width": right - left,
         "Height": bottom - top
     }
+
+
+# Fraction of page height used to decide whether two words are on the same line.
+_LINE_BUCKET_SIZE = 0.008
+
+
+def _group_bboxes_by_line(bboxes):
+    """Group bounding boxes into per-line merged rects.
+
+    Words whose vertical centre falls within _LINE_BUCKET_SIZE of each other
+    are considered to be on the same line. Each group is merged into one bbox
+    that spans only the words on that line, avoiding the wide empty rectangle
+    that a single merged bbox produces for multi-line text.
+
+    Returns a list of merged per-line bboxes, in top-to-bottom order.
+    """
+    if not bboxes:
+        return []
+
+    # Sort by vertical centre
+    def _vcenter(b):
+        return b["Top"] + b["Height"] / 2
+
+    sorted_boxes = sorted(bboxes, key=_vcenter)
+
+    lines = []  # list of lists of bboxes
+    for bbox in sorted_boxes:
+        vc = _vcenter(bbox)
+        # Try to add to an existing line bucket
+        placed = False
+        for line in lines:
+            line_vc = _vcenter(line[0])
+            if abs(vc - line_vc) <= _LINE_BUCKET_SIZE:
+                line.append(bbox)
+                placed = True
+                break
+        if not placed:
+            lines.append([bbox])
+
+    return [_merge_bboxes(line) for line in lines]
 
 
 def _build_label_bbox_map(field_names, page_blocks):
@@ -100,11 +141,16 @@ def _find_anchor(anchor_text, page_blocks):
 
 
 def find_evidence_location(evidence_text, page_blocks, label_bbox=None):
-    """Find the bounding box for the given evidence text in WORD blocks.
+    """Find per-line bounding boxes for the given evidence text in WORD blocks.
 
     Expects page_blocks to be pre-sorted in reading order.
     - Short values (<=8 words): sequence matching with label proximity.
     - Long values (>8 words): anchor on first/last few words and span between.
+
+    Returns a list of per-line merged bboxes so the viewer can render one
+    highlight rectangle per text line, avoiding the large empty rectangle that
+    a single encompassing bbox produces for multi-line text.
+    Returns None when the text cannot be located.
     """
     if not evidence_text or not page_blocks:
         return None
@@ -113,6 +159,11 @@ def find_evidence_location(evidence_text, page_blocks, label_bbox=None):
     evidence_words = evidence_lower.split()
     evidence_len = len(evidence_lower)
     num_blocks = len(page_blocks)
+
+    def _collect_lines(start, length):
+        bboxes = [page_blocks[start + j]["bbox"]
+                  for j in range(length) if page_blocks[start + j].get("bbox")]
+        return _group_bboxes_by_line(bboxes) or None
 
     # ── Long values: anchor approach ──
     if len(evidence_words) > LONG_VALUE_THRESHOLD:
@@ -124,26 +175,20 @@ def find_evidence_location(evidence_text, page_blocks, label_bbox=None):
         end_hits = _find_anchor(end_text, page_blocks)
 
         if start_hits and end_hits:
-            # Try each start/end combo to find a valid span
             for start_idx, _ in start_hits:
                 for end_idx, _ in end_hits:
                     end_pos = end_idx + anchor_size
                     if end_idx >= start_idx and end_pos - start_idx <= len(evidence_words) * 2:
-                        bboxes = [page_blocks[j]["bbox"]
-                                  for j in range(start_idx, min(end_pos, num_blocks))
-                                  if page_blocks[j].get("bbox")]
-                        if bboxes:
-                            return _merge_bboxes(bboxes)
+                        result = _collect_lines(start_idx, min(end_pos, num_blocks) - start_idx)
+                        if result:
+                            return result
 
-        # Fallback: start anchor found, estimate span from evidence word count
         if start_hits:
             start_idx = start_hits[0][0]
             span = min(len(evidence_words), num_blocks - start_idx)
-            bboxes = [page_blocks[start_idx + j]["bbox"]
-                      for j in range(span)
-                      if page_blocks[start_idx + j].get("bbox")]
-            if bboxes:
-                return _merge_bboxes(bboxes)
+            result = _collect_lines(start_idx, span)
+            if result:
+                return result
 
         # Last resort: fall through to short-value matching below
 
@@ -183,19 +228,20 @@ def find_evidence_location(evidence_text, page_blocks, label_bbox=None):
     best_length = min(m[1] for m in top_matches)
     top_matches = [m for m in top_matches if m[1] <= best_length + 2]
 
-    def _extract_bbox(start, length):
+    def _merged_bbox_for_proximity(start, length):
+        """Single merged bbox used only for label-proximity distance calc."""
         bboxes = [page_blocks[start + j]["bbox"]
-                   for j in range(length) if page_blocks[start + j].get("bbox")]
+                  for j in range(length) if page_blocks[start + j].get("bbox")]
         return _merge_bboxes(bboxes)
 
     if len(top_matches) == 1 or not label_bbox:
         best = min(top_matches, key=lambda m: (-m[2], m[1]))
-        return _extract_bbox(best[0], best[1])
+        return _collect_lines(best[0], best[1])
 
     closest = min(top_matches, key=lambda m: _bbox_distance(
-        _extract_bbox(m[0], m[1]) or {}, label_bbox
+        _merged_bbox_for_proximity(m[0], m[1]) or {}, label_bbox
     ))
-    return _extract_bbox(closest[0], closest[1])
+    return _collect_lines(closest[0], closest[1])
 
 # ── Coordinate application ────────────────────────────────────────────────────
 
@@ -259,10 +305,12 @@ def _apply_coords_to_fields(fields_dict, page_blocks, skip_keys=None):
         label_map = _build_label_bbox_map([name for name, _ in fields], sorted_blocks)
 
         for field_name, field_data in fields:
-            bbox = find_evidence_location(
+            line_bboxes = find_evidence_location(
                 field_data["value"], sorted_blocks, label_bbox=label_map.get(field_name)
             )
-            field_data["coords"] = bbox
+            # Store as a list of per-line bboxes (or None when not found).
+            # A single-line result is still a list of length 1.
+            field_data["coords"] = line_bboxes
 
 
 # ── GPT calls ─────────────────────────────────────────────────────────────────
