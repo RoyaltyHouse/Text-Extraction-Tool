@@ -112,32 +112,83 @@ def _build_label_bbox_map(field_names, page_blocks):
 
 LONG_VALUE_THRESHOLD = 8  # words — above this, use anchor matching
 
+# Characters that Textract and GPT represent differently.
+# Keys are unicode variants; values are the canonical ASCII replacement.
+_CHAR_NORMALIZATIONS = str.maketrans({
+    "\u2019": "'",   # right single quotation mark  →  straight apostrophe
+    "\u2018": "'",   # left single quotation mark   →  straight apostrophe
+    "\u2032": "'",   # prime                        →  straight apostrophe
+    "\u201c": '"',   # left double quotation mark   →  straight double quote
+    "\u201d": '"',   # right double quotation mark  →  straight double quote
+    "\u2014": "--",  # em dash                      →  double hyphen
+    "\u2013": "--",  # en dash                      →  double hyphen
+    "\u2012": "--",  # figure dash                  →  double hyphen
+    "\u00b7": ".",   # middle dot                   →  period
+    "\u2022": "-",   # bullet                       →  hyphen
+    "\u00a0": " ",   # non-breaking space           →  regular space
+})
+
+
+def _normalize(text: str) -> str:
+    """Normalise Unicode punctuation variants so GPT text and Textract tokens
+    compare equal regardless of which encoding the source PDF used."""
+    return text.translate(_CHAR_NORMALIZATIONS)
+
 
 def _find_anchor(anchor_text, page_blocks):
     """Find all starting indices where a short word sequence appears in page_blocks.
 
-    Returns list of start indices sorted by match quality.
+    Comparison is done after Unicode punctuation normalisation so that curly
+    apostrophes, em-dashes, etc. don't cause spurious mismatches between GPT
+    output and Textract word tokens.
+
+    Additionally, pure-punctuation-only blocks (e.g. a lone "." or "--") are
+    treated as optional separators: the window is extended by one extra block
+    for each such token encountered, keeping the word count alignment correct.
+
+    Returns list of (start_index, score) tuples sorted best-first.
     """
-    anchor_lower = anchor_text.lower().strip()
-    anchor_word_count = len(anchor_lower.split())
+    anchor_lower = _normalize(anchor_text).lower().strip()
+    # Build expected word list, stripping standalone punctuation from anchor too
+    anchor_words = [w for w in anchor_lower.split() if w]
+    anchor_word_count = len(anchor_words)
     num_blocks = len(page_blocks)
     hits = []
 
-    for i in range(num_blocks - anchor_word_count + 1):
-        combined = ""
-        for j in range(anchor_word_count):
-            word = page_blocks[i + j].get("text", "")
-            combined = f"{combined} {word}" if combined else word
-        combined_lower = combined.lower().strip()
+    for i in range(num_blocks):
+        # Collect up to anchor_word_count *content* words, skipping
+        # standalone-punctuation blocks (they inflate the token count without
+        # contributing meaningful text).
+        words_collected = []
+        j = i
+        while len(words_collected) < anchor_word_count and j < num_blocks:
+            raw = page_blocks[j].get("text", "")
+            norm = _normalize(raw).lower().strip()
+            if norm and not all(c in r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~""" for c in norm):
+                words_collected.append(norm)
+            j += 1
 
-        if anchor_lower == combined_lower:
+        if len(words_collected) < anchor_word_count:
+            break  # not enough blocks left
+
+        combined = " ".join(words_collected)
+
+        if anchor_lower == combined:
             hits.append((i, 1.0))
-        elif anchor_lower in combined_lower:
-            hits.append((i, len(anchor_lower) / len(combined_lower)))
+        elif anchor_lower in combined:
+            hits.append((i, len(anchor_lower) / len(combined)))
+        elif combined in anchor_lower and len(combined) > 3:
+            hits.append((i, len(combined) / len(anchor_lower) * 0.8))
 
-    # Best scores first
     hits.sort(key=lambda h: -h[1])
     return hits
+
+
+def _strip_terminal_punct(text: str) -> str:
+    """Strip trailing and leading punctuation characters from a string.
+    Used to normalise the end-anchor so 'pool.' matches the Textract block 'pool'
+    when the period is a separate block in the Textract output."""
+    return text.strip(r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~""")
 
 
 def find_evidence_location(evidence_text, page_blocks, label_bbox=None):
@@ -155,9 +206,9 @@ def find_evidence_location(evidence_text, page_blocks, label_bbox=None):
     if not evidence_text or not page_blocks:
         return None
 
-    evidence_lower = evidence_text.lower().strip()
-    evidence_words = evidence_lower.split()
-    evidence_len = len(evidence_lower)
+    evidence_norm = _normalize(evidence_text).lower().strip()
+    evidence_words = evidence_norm.split()
+    evidence_len = len(evidence_norm)
     num_blocks = len(page_blocks)
 
     def _collect_lines(start, length):
@@ -169,7 +220,11 @@ def find_evidence_location(evidence_text, page_blocks, label_bbox=None):
     if len(evidence_words) > LONG_VALUE_THRESHOLD:
         anchor_size = min(5, len(evidence_words) // 2)
         start_text = " ".join(evidence_words[:anchor_size])
-        end_text = " ".join(evidence_words[-anchor_size:])
+        # Strip terminal punctuation from the last anchor word so "pool." matches
+        # Textract blocks where the period is returned as a separate token.
+        end_words = evidence_words[-anchor_size:]
+        end_words[-1] = _strip_terminal_punct(end_words[-1])
+        end_text = " ".join(end_words)
 
         start_hits = _find_anchor(start_text, page_blocks)
         end_hits = _find_anchor(end_text, page_blocks)
@@ -200,16 +255,17 @@ def find_evidence_location(evidence_text, page_blocks, label_bbox=None):
         combined = ""
 
         for length in range(1, min(max_words + 1, num_blocks - i + 1)):
-            word = page_blocks[i + length - 1].get("text", "")
-            combined = f"{combined} {word}" if combined else word
-            combined_lower = combined.lower().strip()
+            raw_word = page_blocks[i + length - 1].get("text", "")
+            norm_word = _normalize(raw_word).lower().strip()
+            combined = f"{combined} {norm_word}" if combined else norm_word
+            combined_lower = combined.strip()
 
             score = 0
-            if evidence_lower == combined_lower:
+            if evidence_norm == combined_lower:
                 score = 1.0
-            elif evidence_lower in combined_lower:
+            elif evidence_norm in combined_lower:
                 score = evidence_len / len(combined_lower)
-            elif combined_lower in evidence_lower and len(combined_lower) > 3:
+            elif combined_lower in evidence_norm and len(combined_lower) > 3:
                 score = len(combined_lower) / evidence_len * 0.7
 
             if score > 0.3:
