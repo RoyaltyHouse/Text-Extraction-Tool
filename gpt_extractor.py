@@ -1,5 +1,5 @@
 from dotenv import load_dotenv
-from prompt import build_detection_prompt, build_final_document_prompt, ARRAY_FIELDS
+from prompt import build_extraction_prompt, ARRAY_FIELDS
 import os
 import json
 from openai import OpenAI
@@ -279,56 +279,19 @@ def _strip_markdown_fences(content):
     return content
 
 
-def detect_producers(page_text):
-    """Pass 1: classify how many producers are party to this agreement.
-
-    Returns a list of producer name strings. Always returns at least one entry.
-    Falls back to ["Producer"] if detection fails or GPT returns unexpected output.
-    """
-    prompt = build_detection_prompt(page_text)
-    print("[DEBUG] Running producer detection pass...")
-
-    response = client.chat.completions.create(
-        model="gpt-4-1106-preview",
-        messages=[
-            {"role": "system", "content": "You are an intelligent document extraction assistant."},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0.1
-    )
-
-    content = _strip_markdown_fences(response.choices[0].message.content)
-    print(f"[DEBUG] Detection response: {content}")
-
-    try:
-        result = json.loads(content)
-        producers = result.get("producers", [])
-        if producers and isinstance(producers, list) and all(isinstance(p, str) for p in producers):
-            return producers
-        print("[WARNING] Detection returned malformed producers list — defaulting to single producer")
-        return ["Producer"]
-    except json.JSONDecodeError as e:
-        print(f"[ERROR] Failed to parse detection response: {e}")
-        return ["Producer"]
-
-
-def extract_field_information(page_text, page_blocks=None, producers=None):
-    """Pass 2: extract all fields from the contract with producer context.
+def extract_field_information(page_text, page_blocks=None):
+    """Single-pass extraction: identify producers and extract all fields.
 
     Args:
         page_text:   dict of {page_num: [lines]} from Textract
         page_blocks: dict of {page_num: [{text, bbox}]} WORD blocks for coords
-        producers:   list of producer name strings from detect_producers()
 
     Returns a dict with universal fields at the top level and a "producers"
     array containing per-producer field extractions, each with coords where
     the value could be located in the document.
     """
-    if not producers:
-        producers = ["Producer"]
-
-    prompt = build_final_document_prompt(page_text, producers)
-    print(f"[DEBUG] Sending extraction prompt to OpenAI ({len(producers)} producer(s))...")
+    prompt = build_extraction_prompt(page_text)
+    print("[DEBUG] Sending extraction prompt to OpenAI (single-pass)...")
 
     response = client.chat.completions.create(
         model="gpt-4-1106-preview",
