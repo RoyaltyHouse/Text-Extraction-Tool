@@ -1,5 +1,5 @@
 from dotenv import load_dotenv
-from prompt import build_detection_prompt, build_final_document_prompt
+from prompt import build_detection_prompt, build_final_document_prompt, ARRAY_FIELDS
 import os
 import json
 from openai import OpenAI
@@ -206,19 +206,39 @@ def find_evidence_location(evidence_text, page_blocks, label_bbox=None):
 def _apply_coords_to_fields(fields_dict, page_blocks, skip_keys=None):
     """Apply bounding box coordinates to a flat dict of {field_name: field_data}.
 
-    Skips fields whose value is non-string (e.g. the nested dict returned for
-    Lawyer Information) and fields listed in skip_keys (e.g. "producers",
-    "producer_name").
+    Handles two value shapes:
+    - Scalar: {"value": str, "page_number": int}  — standard fields
+    - Array:  [{"value": str, "page_number": int}, ...]  — ARRAY_FIELDS
+              Each entry gets its own coords so every occurrence is highlightable.
 
-    Groups work by page so the expensive label-map scan runs once per page.
+    Skips non-string values (e.g. Lawyer Information's nested dict) and any
+    keys listed in skip_keys (e.g. "producers", "producer_name").
+
+    Groups work by page so the label-map scan runs once per page.
     """
     skip_keys = skip_keys or set()
 
-    # Group fields by page number, collecting only extractable string values
+    # Collect all (field_name, entry_dict) pairs grouped by page number.
+    # Array fields contribute one pair per entry; scalar fields contribute one.
     fields_by_page = {}
     for field_name, field_data in fields_dict.items():
         if field_name in skip_keys:
             continue
+
+        if field_name in ARRAY_FIELDS and isinstance(field_data, list):
+            # Array-valued field — each entry is matched independently
+            for entry in field_data:
+                if not isinstance(entry, dict):
+                    continue
+                value = entry.get("value")
+                if not value or value == "not found" or not isinstance(value, str):
+                    continue
+                page_num = entry.get("page_number")
+                if page_num is not None and isinstance(page_num, int):
+                    fields_by_page.setdefault(page_num, []).append((field_name, entry))
+            continue
+
+        # Scalar field — standard {value, page_number} dict
         if not isinstance(field_data, dict):
             continue
         value = field_data.get("value")

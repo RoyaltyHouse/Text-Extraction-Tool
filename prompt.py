@@ -19,6 +19,14 @@ UNIVERSAL_FIELDS = [
     "Organization Counting Units",
 ]
 
+# Derived from field_descriptions.json — any field with "is_array": true
+# returns a list of {value, page_number} entries instead of a single object.
+# To make a field array-typed, just add "is_array": true to its entry in the JSON.
+ARRAY_FIELDS = {
+    name for name, data in field_descriptions_details.items()
+    if isinstance(data, dict) and data.get("is_array", False)
+}
+
 # Fields extracted separately for each producer party to the agreement
 PRODUCER_FIELDS = [
     "Client Party",
@@ -34,12 +42,21 @@ PRODUCER_FIELDS = [
 ]
 
 
+def _get_description(name):
+    """Extract the description string from a field entry (object or plain string)."""
+    data = field_descriptions_details.get(name)
+    if data is None:
+        return "Extract this field from the document."
+    if isinstance(data, dict):
+        return data.get("description", "Extract this field from the document.")
+    return data  # plain string — legacy / manually-added field
+
+
 def _format_field_list(field_names):
     """Build a numbered field description block from a list of field names."""
     lines = []
     for i, name in enumerate(field_names):
-        desc = field_descriptions_details.get(name, "Extract this field from the document.")
-        lines.append(f"{i + 1}. **{name}**\n   {desc}")
+        lines.append(f"{i + 1}. **{name}**\n   {_get_description(name)}")
     return "\n".join(lines)
 
 
@@ -106,6 +123,7 @@ def build_final_document_prompt(pages_text, producers):
 
     producer_count = len(producers)
     producer_list_str = ", ".join(f'"{p}"' for p in producers)
+    array_fields_list = ", ".join(f'"{f}"' for f in sorted(ARRAY_FIELDS)) or "none"
 
     if producer_count > 1:
         producer_instruction = f"""This agreement involves {producer_count} producers: {producer_list_str}.
@@ -124,7 +142,10 @@ Extract Producer-Specific Fields for that producer."""
         entry_lines = [f'    {{', f'      "producer_name": "{producer_name}",']
         producer_example_fields = [f for f in PRODUCER_FIELDS if f in field_descriptions_details]
         for field in producer_example_fields:
-            entry_lines.append(f'      "{field}": {{"value": "...", "page_number": 1}},')
+            if field in ARRAY_FIELDS:
+                entry_lines.append(f'      "{field}": [{{"value": "...", "page_number": 1}}],')
+            else:
+                entry_lines.append(f'      "{field}": {{"value": "...", "page_number": 1}},')
         # Remove trailing comma from last field line
         entry_lines[-1] = entry_lines[-1].rstrip(",")
         entry_lines.append("    }")
@@ -158,6 +179,9 @@ Read all pages of the contract provided below, then return a single JSON object 
     {{"value": "actual value here", "page_number": X}}
 - If not found in the entire document, return:
     {{"value": "not found", "page_number": null}}
+- For fields marked as array-type ({array_fields_list}): return an ARRAY of individual
+  verbatim entries (one per occurrence), each as {{"value": "...", "page_number": X}}.
+  Return [] if none found. Do NOT combine multiple values into a single string.
 - Return valid JSON only. No Markdown, no explanation.
 
 ---
