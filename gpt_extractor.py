@@ -280,15 +280,15 @@ def _strip_markdown_fences(content):
 
 
 def extract_field_information(page_text, page_blocks=None):
-    """Single-pass extraction: identify producers and extract all fields.
+    """Single-pass extraction: identify producers + songs and extract all fields.
 
     Args:
         page_text:   dict of {page_num: [lines]} from Textract
         page_blocks: dict of {page_num: [{text, bbox}]} WORD blocks for coords
 
-    Returns a dict with universal fields at the top level and a "producers"
-    array containing per-producer field extractions, each with coords where
-    the value could be located in the document.
+    Returns a dict with universal fields at the top level, a "producers" array
+    with per-producer field extractions, and a "songs" array with per-song field
+    extractions — each entry enriched with bounding box coords where found.
     """
     prompt = build_extraction_prompt(page_text)
     print("[DEBUG] Sending extraction prompt to OpenAI (single-pass)...")
@@ -314,12 +314,16 @@ def extract_field_information(page_text, page_blocks=None):
 
     if page_blocks:
         try:
-            # Apply coords to universal top-level fields (skip the producers array)
-            _apply_coords_to_fields(extracted_fields, page_blocks, skip_keys={"producers"})
+            # Apply coords to universal top-level fields (skip nested arrays)
+            _apply_coords_to_fields(extracted_fields, page_blocks, skip_keys={"producers", "songs"})
 
             # Apply coords to each producer's individual fields
             for producer in extracted_fields.get("producers", []):
                 _apply_coords_to_fields(producer, page_blocks, skip_keys={"producer_name"})
+
+            # Apply coords to each song's individual fields
+            for song in extracted_fields.get("songs", []):
+                _apply_coords_to_fields(song, page_blocks, skip_keys={"song_title", "is_rate_explicit"})
 
         except Exception as e:
             print(f"[WARNING] Failed to add coordinates: {e}")
