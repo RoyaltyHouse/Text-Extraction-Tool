@@ -118,12 +118,9 @@ def build_final_document_prompt(pages_text, producers):
     universal_field_text = _format_field_list(
         [f for f in UNIVERSAL_FIELDS if f in field_descriptions_details]
     )
-
-    # Prepare contract text by adding page number headers
-    contract_text = "\n".join(
-        [f"\n--- Page {page_num} ---\n{text}" for page_num, text in pages_text.items()]
+    producer_field_text = _format_field_list(
+        [f for f in PRODUCER_FIELDS if f in field_descriptions_details]
     )
-
     contract_text = _format_contract_text(pages_text)
 
     producer_count = len(producers)
@@ -235,23 +232,5 @@ Return the results as a single JSON object (one key per field) only after the la
 {contract_text}
 \"\"\"
 
----
-
-### Output Format (after the last page):
-{{
-  "Document Name": {{
-    "value": "...",
-    "page_number": 2
-  }},
-  "Execution Status": {{
-    "value": "...",
-    "page_number": 4
-  }},
-  ...
-  "International Sales Policy": {{
-    "value": "not found",
-    "page_number": null
-  }}
-}}
-Always respond with valid JSON only.Do not include Markdown formatting or explanation.
-"""
+Always respond with valid JSON only. Do not include Markdown formatting or explanation.
+""".strip()
