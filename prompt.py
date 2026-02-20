@@ -133,8 +133,10 @@ def build_extraction_prompt(pages_text):
     producer_field_text = _format_field_list(
         [f for f in PRODUCER_FIELDS if f in field_descriptions_details]
     )
-    song_field_text = _format_field_list(
-        [f for f in SONG_FIELDS if f in field_descriptions_details]
+    # Song fields are a subset of producer fields — list names only to avoid
+    # repeating the full descriptions and inflating the prompt token count.
+    song_field_names = ", ".join(
+        f'"{f}"' for f in SONG_FIELDS if f in field_descriptions_details
     )
     contract_text = _format_contract_text(pages_text)
     array_fields_list = ", ".join(f'"{f}"' for f in sorted(ARRAY_FIELDS)) or "none"
@@ -196,7 +198,8 @@ Producer-specific rules:
 
 PHASE 4 — SONG-SPECIFIC FIELDS (extract for EACH song)
 -------------------------------------------------------
-{song_field_text}
+Extract the following fields for each song, using the same definitions as Phase 3:
+{song_field_names}
 
 Song-specific rules:
 - Create one entry in the "songs" array for EACH song identified in Phase 1.5
