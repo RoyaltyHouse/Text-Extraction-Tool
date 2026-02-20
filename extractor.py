@@ -1,6 +1,6 @@
 # extractor.py
 from pypdf import PdfReader
-from gpt_extractor import detect_producers, extract_field_information
+from gpt_extractor import extract_field_information
 import json , os, tempfile, time
 import boto3
 from flask import jsonify
@@ -18,12 +18,7 @@ def extract_text_from_pdf(text, blocks=None):
         return {"error": "No text provided for extraction"}
     print("[DEBUG] Extraction started for text")
 
-    # Pass 1: detect all producers named in this agreement
-    producers = detect_producers(text)
-    print(f"[DEBUG] Detected producers: {producers}")
-
-    # Pass 2: full field extraction with producer context
-    open_ai_Data = extract_field_information(text, blocks, producers=producers)
+    open_ai_Data = extract_field_information(text, blocks)
 
     if isinstance(open_ai_Data, dict):
         return open_ai_Data
