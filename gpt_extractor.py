@@ -80,43 +80,35 @@ def _group_bboxes_by_line(bboxes):
 
 
 def _build_label_bbox_map(field_names, page_blocks):
-    """Find each field label's bounding box using anchor-based sequence matching.
+    """Single scan over page_blocks to locate every field label's bounding box.
 
-    Uses _find_anchor on the first 3 clean words of each field name so that
-    multi-word labels like "Producer Advance Legal Recoupment" are located
-    reliably. Single-word matching is unreliable because common words such as
-    "recoupment" or "legal" appear throughout the contract in unrelated contexts.
-
-    Returns a dict of {field_name: bbox} for labels found in page_blocks.
+    Works with WORD blocks by checking if any significant word from the field
+    name appears in the document.
     """
+    field_lowers = {name: name.lower().strip() for name in field_names}
+    best_scores = {}
     label_bboxes = {}
-    for name in field_names:
-        name_words = _clean_for_compare(name).split()
-        if not name_words:
+
+    for block in page_blocks:
+        block_text = block.get("text", "").lower().strip()
+        if not block_text or len(block_text) < 2:
             continue
-        # Anchor on the first 3 words — specific enough to locate the label
-        # without being so long that minor OCR differences cause a miss.
-        anchor_text = " ".join(name_words[:min(3, len(name_words))])
-        hits = _find_anchor(anchor_text, page_blocks)
-        if hits:
-            label_bboxes[name] = page_blocks[hits[0][0]].get("bbox")
+
+        for name, field_lower in field_lowers.items():
+            # Check for full field name in word
+            if field_lower in block_text:
+                score = len(field_lower) / len(block_text)
+                if score > best_scores.get(name, 0):
+                    best_scores[name] = score
+                    label_bboxes[name] = block.get("bbox")
+            # Check if word is significant part of field name (e.g., "Artist" in "Artist Name")
+            elif block_text in field_lower and len(block_text) >= 4:
+                score = len(block_text) / len(field_lower) * 0.8
+                if score > best_scores.get(name, 0):
+                    best_scores[name] = score
+                    label_bboxes[name] = block.get("bbox")
+
     return label_bboxes
-
-
-def _find_zone_in_blocks(zone_text, page_blocks):
-    """Return the block index where zone_text first appears, or None if absent.
-
-    Used to scope per-song and per-producer coordinate searches to only the
-    region of the page belonging to that song/producer's section.
-    """
-    if not zone_text or not page_blocks:
-        return None
-    zone_words = _clean_for_compare(zone_text).split()
-    if not zone_words:
-        return None
-    anchor_text = " ".join(zone_words[:min(4, len(zone_words))])
-    hits = _find_anchor(anchor_text, page_blocks)
-    return hits[0][0] if hits else None
 
 
 LONG_VALUE_THRESHOLD = 8  # words — above this, use anchor matching
@@ -360,16 +352,7 @@ def find_evidence_location(evidence_text, page_blocks, label_bbox=None):
 
 # ── Coordinate application ────────────────────────────────────────────────────
 
-def _sort_blocks(blocks):
-    """Sort WORD blocks into reading order: row bucket (1% of page) then left."""
-    return sorted(blocks, key=lambda b: (
-        round(b.get("bbox", {}).get("Top", 0) * 100),
-        b.get("bbox", {}).get("Left", 0)
-    ))
-
-
-def _apply_coords_to_fields(fields_dict, page_blocks, skip_keys=None,
-                             zone_start_text=None, zone_end_text=None):
+def _apply_coords_to_fields(fields_dict, page_blocks, skip_keys=None):
     """Apply bounding box coordinates to a flat dict of {field_name: field_data}.
 
     Handles two value shapes:
@@ -377,27 +360,22 @@ def _apply_coords_to_fields(fields_dict, page_blocks, skip_keys=None,
     - Array:  [{"value": str, "page_number": int}, ...]  — ARRAY_FIELDS
               Each entry gets its own coords so every occurrence is highlightable.
 
-    zone_start_text / zone_end_text
-        When provided, the block search on each page is restricted to the region
-        between these two text anchors. Used for per-song and per-producer fields
-        so that identical values appearing in different songs' sections are not
-        confused with each other.
-
-    Page fallback:
-        If no match is found on the GPT-reported page, tries page ± 1.  This
-        recovers from off-by-one page-number errors in the GPT response.
+    Skips non-string values (e.g. Lawyer Information's nested dict) and any
+    keys listed in skip_keys (e.g. "producers", "producer_name").
 
     Groups work by page so the label-map scan runs once per page.
     """
     skip_keys = skip_keys or set()
 
     # Collect all (field_name, entry_dict) pairs grouped by page number.
+    # Array fields contribute one pair per entry; scalar fields contribute one.
     fields_by_page = {}
     for field_name, field_data in fields_dict.items():
         if field_name in skip_keys:
             continue
 
         if field_name in ARRAY_FIELDS and isinstance(field_data, list):
+            # Array-valued field — each entry is matched independently
             for entry in field_data:
                 if not isinstance(entry, dict):
                     continue
@@ -409,80 +387,40 @@ def _apply_coords_to_fields(fields_dict, page_blocks, skip_keys=None,
                     fields_by_page.setdefault(page_num, []).append((field_name, entry))
             continue
 
+        # Scalar field — standard {value, page_number} dict
         if not isinstance(field_data, dict):
             continue
         value = field_data.get("value")
         if not value or value == "not found":
             continue
         if not isinstance(value, str):
+            # Non-string values (e.g. Lawyer Information's nested dict) cannot
+            # be located in word blocks — skip coords entirely for those fields.
             continue
         page_num = field_data.get("page_number")
         if page_num is not None and isinstance(page_num, int):
             fields_by_page.setdefault(page_num, []).append((field_name, field_data))
 
-    def _get_zoned_blocks(raw_blocks):
-        """Sort and optionally slice blocks to the zone [start_text, end_text)."""
-        sorted_blks = _sort_blocks(raw_blocks)
-        if not (zone_start_text or zone_end_text):
-            return sorted_blks
-
-        start_idx = 0
-        if zone_start_text:
-            found = _find_zone_in_blocks(zone_start_text, sorted_blks)
-            if found is not None:
-                start_idx = found
-
-        end_idx = len(sorted_blks)
-        if zone_end_text:
-            found = _find_zone_in_blocks(zone_end_text, sorted_blks)
-            # Only use the zone end if it falls AFTER the zone start; otherwise
-            # the end marker isn't on this page and we keep the rest of the page.
-            if found is not None and found > start_idx:
-                end_idx = found
-
-        return sorted_blks[start_idx:end_idx]
-
     for page_num, fields in fields_by_page.items():
-        sorted_blocks = _get_zoned_blocks(page_blocks.get(page_num, []))
+        blocks_on_page = page_blocks.get(page_num, [])
+        # Sort into reading order: row (bucketed by 1% of page height) then left
+        sorted_blocks = sorted(blocks_on_page, key=lambda b: (
+            round(b.get("bbox", {}).get("Top", 0) * 100),
+            b.get("bbox", {}).get("Left", 0)
+        ))
+        # Single scan to find all label positions for this page
         label_map = _build_label_bbox_map([name for name, _ in fields], sorted_blocks)
 
         for field_name, field_data in fields:
-            value = field_data["value"]
             line_bboxes = find_evidence_location(
-                value, sorted_blocks, label_bbox=label_map.get(field_name)
+                field_data["value"], sorted_blocks, label_bbox=label_map.get(field_name)
             )
-
-            # ── Page fallback: try ± 1 page when GPT reported the wrong page ──
-            if line_bboxes is None:
-                for delta in (-1, +1):
-                    fb_raw = page_blocks.get(page_num + delta, [])
-                    if not fb_raw:
-                        continue
-                    fb_blocks = _get_zoned_blocks(fb_raw)
-                    line_bboxes = find_evidence_location(value, fb_blocks)
-                    if line_bboxes is not None:
-                        # Update page_number so the viewer renders on the correct page
-                        field_data["page_number"] = page_num + delta
-                        break
-
+            # Store as a list of per-line bboxes (or None when not found).
+            # A single-line result is still a list of length 1.
             field_data["coords"] = line_bboxes
 
 
 # ── GPT calls ─────────────────────────────────────────────────────────────────
-
-def _get_entity_text(v):
-    """Return the string value from either a plain string or a {value, ...} dict.
-
-    GPT returns song_title and producer_name as plain strings per the prompt
-    format, but handle the dict case defensively.
-    """
-    if isinstance(v, str):
-        return v or None
-    if isinstance(v, dict):
-        val = v.get("value")
-        return val if isinstance(val, str) and val not in ("", "not found") else None
-    return None
-
 
 def _strip_markdown_fences(content):
     """Remove ```json / ``` fences that GPT occasionally wraps responses in."""
@@ -534,32 +472,13 @@ def extract_field_information(page_text, page_blocks=None):
             # Apply coords to universal top-level fields (skip nested arrays)
             _apply_coords_to_fields(extracted_fields, page_blocks, skip_keys={"producers", "songs"})
 
-            # Apply coords to each producer's individual fields.
-            # When there are multiple producers, zone-scope each one to its own
-            # section of the document so identical values aren't confused across
-            # producers (e.g. two different "Legal Advance" amounts).
-            producers = extracted_fields.get("producers", [])
-            for i, producer in enumerate(producers):
-                zone_start = _get_entity_text(producer.get("producer_name"))
-                zone_end   = _get_entity_text(producers[i + 1].get("producer_name")) if i + 1 < len(producers) else None
-                _apply_coords_to_fields(
-                    producer, page_blocks, skip_keys={"producer_name"},
-                    zone_start_text=zone_start if len(producers) > 1 else None,
-                    zone_end_text=zone_end   if len(producers) > 1 else None,
-                )
+            # Apply coords to each producer's individual fields
+            for producer in extracted_fields.get("producers", []):
+                _apply_coords_to_fields(producer, page_blocks, skip_keys={"producer_name"})
 
-            # Apply coords to each song's individual fields.
-            # Zone-scope each song to its own section so that the same royalty
-            # rate appearing in multiple songs' sections maps to the right one.
-            songs = extracted_fields.get("songs", [])
-            for i, song in enumerate(songs):
-                zone_start = _get_entity_text(song.get("song_title"))
-                zone_end   = _get_entity_text(songs[i + 1].get("song_title")) if i + 1 < len(songs) else None
-                _apply_coords_to_fields(
-                    song, page_blocks, skip_keys={"song_title", "is_rate_explicit"},
-                    zone_start_text=zone_start if len(songs) > 1 else None,
-                    zone_end_text=zone_end   if len(songs) > 1 else None,
-                )
+            # Apply coords to each song's individual fields
+            for song in extracted_fields.get("songs", []):
+                _apply_coords_to_fields(song, page_blocks, skip_keys={"song_title", "is_rate_explicit"})
 
         except Exception as e:
             print(f"[WARNING] Failed to add coordinates: {e}")
