@@ -11,23 +11,24 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY2"))
 
 # Characters that Textract and GPT represent differently.
 _CHAR_NORMALIZATIONS = str.maketrans({
-    "\u2019": "'",   # right single quotation mark  →  straight apostrophe
-    "\u2018": "'",   # left single quotation mark   →  straight apostrophe
-    "\u2032": "'",   # prime                        →  straight apostrophe
-    "\u201c": '"',   # left double quotation mark   →  straight double quote
-    "\u201d": '"',   # right double quotation mark  →  straight double quote
-    "\u2014": "--",  # em dash                      →  double hyphen
-    "\u2013": "--",  # en dash                      →  double hyphen
-    "\u2012": "--",  # figure dash                  →  double hyphen
-    "\u00b7": ".",   # middle dot                   →  period
-    "\u2022": "-",   # bullet                       →  hyphen
-    "\u00a0": " ",   # non-breaking space           →  regular space
+    "\u2019": "'",   # right single quotation mark
+    "\u2018": "'",   # left single quotation mark
+    "\u2032": "'",   # prime
+    "\u201c": '"',   # left double quotation mark
+    "\u201d": '"',   # right double quotation mark
+    "\u2014": "--",  # em dash
+    "\u2013": "--",  # en dash
+    "\u2012": "--",  # figure dash
+    "\u00b7": ".",   # middle dot
+    "\u2022": "-",   # bullet
+    "\u00a0": " ",   # non-breaking space
 })
+
+_NEIGHBOR_RADIUS = 2  # lines above/below GPT's lines to search on miss
 
 
 def _normalize(text: str) -> str:
-    """Normalise Unicode punctuation variants so GPT text and Textract tokens
-    compare equal regardless of which encoding the source PDF used."""
+    """Normalise Unicode punctuation so GPT text and Textract tokens compare equal."""
     return text.translate(_CHAR_NORMALIZATIONS)
 
 
@@ -47,72 +48,49 @@ def _merge_bboxes(bboxes):
         "Left": left,
         "Top": top,
         "Width": right - left,
-        "Height": bottom - top
+        "Height": bottom - top,
     }
 
 
-# ── Line-based coordinate resolution ─────────────────────────────────────────
+# ── Word collection helpers ──────────────────────────────────────────────────
 
-def _resolve_coords(value, line_nums, line_index):
-    """Look up word-level bboxes for a value on the given line numbers.
-
-    Collects all words from the candidate lines into a flat list, then finds
-    the contiguous word span that best matches the value text. This handles:
-    - Sub-line precision (value is part of a line → only those words highlighted)
-    - Multi-line values (span crosses line boundaries → words from each line)
-    - Extra lines GPT included (e.g. a header above the value → those words
-      won't be part of the best match and get dropped)
-
-    Returns a list of per-line merged bboxes, or None if lines are invalid.
-    """
-    if not value or not line_nums or not line_index:
-        return None
-
-    value_norm = _normalize(value).lower().strip()
-
-    # Collect all words from the candidate lines, tagging each with its line num
-    all_words = []  # [(word_dict, line_num), ...]
+def _words_for_lines(line_nums, line_index):
+    """Collect all (word_dict, line_num) tuples for a set of line numbers."""
+    words = []
     for ln in line_nums:
         entry = line_index.get(ln)
         if not entry:
             continue
         for w in entry.get("words", []):
             if w.get("bbox"):
-                all_words.append((w, ln))
+                words.append((w, ln))
+    return words
 
-    if not all_words:
-        return None
 
-    # Find the best matching contiguous word span across all candidate words
-    matched = _find_word_span(value_norm, all_words)
+def _expand_line_nums(line_nums, line_index, radius=_NEIGHBOR_RADIUS):
+    """Return line_nums expanded by ±radius, clamped to valid keys."""
+    expanded = set(line_nums)
+    for ln in line_nums:
+        for offset in range(-radius, radius + 1):
+            candidate = ln + offset
+            if candidate in line_index:
+                expanded.add(candidate)
+    return sorted(expanded)
 
-    if not matched:
-        return None
 
-    # Group matched bboxes by line number, merge each group into one rect
-    lines_bboxes = OrderedDict()
-    for bbox, ln in matched:
-        lines_bboxes.setdefault(ln, []).append(bbox)
-
-    result = []
-    for bboxes in lines_bboxes.values():
-        merged = _merge_bboxes(bboxes)
-        if merged:
-            result.append(merged)
-
-    return result if result else None
-
+# ── Word-span matching ───────────────────────────────────────────────────────
 
 def _find_word_span(value_norm, tagged_words):
-    """Find the best matching contiguous word span.
+    """Find the contiguous word span that best matches *value_norm*.
 
-    tagged_words: list of (word_dict, line_num) tuples.
-
-    Returns list of (bbox, line_num) for the matched words, or all words
-    as fallback if no good match is found.
+    Returns list of (bbox, line_num) for matched words, or None if nothing
+    scores above the acceptance threshold.
     """
     n = len(tagged_words)
-    best_start, best_len, best_score = 0, n, 0
+    if n == 0:
+        return None
+
+    best_start, best_len, best_score = 0, 0, 0.0
 
     for i in range(n):
         combined = ""
@@ -121,16 +99,16 @@ def _find_word_span(value_norm, tagged_words):
             combined = f"{combined} {w}".strip() if combined else w
 
             if value_norm == combined:
-                # Exact match — return immediately
-                return [(tagged_words[i + k][0]["bbox"], tagged_words[i + k][1])
-                        for k in range(j - i + 1)]
+                return [
+                    (tagged_words[i + k][0]["bbox"], tagged_words[i + k][1])
+                    for k in range(j - i + 1)
+                ]
 
             if value_norm in combined:
                 score = len(value_norm) / len(combined)
                 if score > best_score:
                     best_start, best_len, best_score = i, j - i + 1, score
 
-            # Stop expanding if we've overshot
             if len(combined) > len(value_norm) * 1.5:
                 break
 
@@ -138,39 +116,63 @@ def _find_word_span(value_norm, tagged_words):
             break
 
     if best_score > 0.5:
-        return [(tagged_words[best_start + k][0]["bbox"], tagged_words[best_start + k][1])
-                for k in range(best_len)]
+        return [
+            (tagged_words[best_start + k][0]["bbox"], tagged_words[best_start + k][1])
+            for k in range(best_len)
+        ]
 
-    # Fallback: return all words (GPT said these lines, trust it)
-    return [(w[0]["bbox"], w[1]) for w in tagged_words]
+    return None
 
 
-def _apply_coords(fields_dict, line_index, skip_keys=None):
-    """Resolve coordinates for all fields using their 'lines' arrays.
+# ── Coordinate resolution ────────────────────────────────────────────────────
 
-    Also derives page_number from the line index so the frontend continues
-    to receive it without GPT having to return it.
+def _resolve_coords(value, line_nums, line_index):
+    """Resolve word-level bboxes for *value* near the given *line_nums*.
+
+    Strategy (in order):
+      1. Search only the lines GPT referenced.
+      2. If no match, expand search to ±NEIGHBOR_RADIUS lines.
+      3. If still no match, fall back to highlighting the original lines fully.
+
+    Returns (coords, matched_line_nums) where coords is a list of per-line
+    merged bboxes and matched_line_nums is the set of lines actually used.
+    Returns (None, line_nums) when resolution fails entirely.
     """
-    skip_keys = skip_keys or set()
+    if not value or not line_nums or not line_index:
+        return None, line_nums
 
-    for field_name, field_data in fields_dict.items():
-        if field_name in skip_keys:
-            continue
+    value_norm = _normalize(value).lower().strip()
 
-        if field_name in ARRAY_FIELDS and isinstance(field_data, list):
-            for entry in field_data:
-                if not isinstance(entry, dict):
-                    continue
-                _resolve_single_field(entry, line_index)
-            continue
+    # --- Attempt 1: exact lines GPT referenced ---
+    primary_words = _words_for_lines(line_nums, line_index)
+    matched = _find_word_span(value_norm, primary_words) if primary_words else None
 
-        if not isinstance(field_data, dict):
-            continue
-        _resolve_single_field(field_data, line_index)
+    # --- Attempt 2: expand to neighbor lines ---
+    if matched is None:
+        expanded = _expand_line_nums(line_nums, line_index)
+        if set(expanded) != set(line_nums):
+            neighbor_words = _words_for_lines(expanded, line_index)
+            matched = _find_word_span(value_norm, neighbor_words) if neighbor_words else None
+
+    # --- Fallback: highlight all words on GPT's original lines ---
+    if matched is None and primary_words:
+        matched = [(w[0]["bbox"], w[1]) for w in primary_words]
+
+    if not matched:
+        return None, line_nums
+
+    # Group by line number → merge each line's bboxes into one rect
+    grouped = OrderedDict()
+    for bbox, ln in matched:
+        grouped.setdefault(ln, []).append(bbox)
+
+    actual_lines = sorted(grouped.keys())
+    coords = [_merge_bboxes(bbs) for bbs in grouped.values() if _merge_bboxes(bbs)]
+    return (coords or None), actual_lines
 
 
 def _resolve_single_field(field_data, line_index):
-    """Resolve coords and derive page_number for one field entry."""
+    """Resolve coords, correct line references, and derive page_number."""
     value = field_data.get("value")
     line_nums = field_data.get("lines", [])
 
@@ -179,8 +181,28 @@ def _resolve_single_field(field_data, line_index):
         field_data["page_number"] = _page_from_lines(line_nums, line_index)
         return
 
-    field_data["coords"] = _resolve_coords(value, line_nums, line_index)
-    field_data["page_number"] = _page_from_lines(line_nums, line_index)
+    coords, actual_lines = _resolve_coords(value, line_nums, line_index)
+    field_data["coords"] = coords
+    field_data["lines"] = actual_lines
+    field_data["page_number"] = _page_from_lines(actual_lines, line_index)
+
+
+def _apply_coords(fields_dict, line_index, skip_keys=None):
+    """Resolve coordinates for every field in *fields_dict*."""
+    skip_keys = skip_keys or set()
+
+    for field_name, field_data in fields_dict.items():
+        if field_name in skip_keys:
+            continue
+
+        if field_name in ARRAY_FIELDS and isinstance(field_data, list):
+            for entry in field_data:
+                if isinstance(entry, dict):
+                    _resolve_single_field(entry, line_index)
+            continue
+
+        if isinstance(field_data, dict):
+            _resolve_single_field(field_data, line_index)
 
 
 def _page_from_lines(line_nums, line_index):
@@ -192,10 +214,10 @@ def _page_from_lines(line_nums, line_index):
     return None
 
 
-# ── GPT calls ─────────────────────────────────────────────────────────────────
+# ── GPT interaction ──────────────────────────────────────────────────────────
 
 def _strip_markdown_fences(content):
-    """Remove ```json / ``` fences that GPT occasionally wraps responses in."""
+    """Remove ```json / ``` fences GPT occasionally wraps responses in."""
     content = content.strip()
     if content.startswith("```"):
         lines = content.splitlines()
@@ -207,35 +229,24 @@ def _strip_markdown_fences(content):
 
 
 def extract_field_information(line_index):
-    """Single-pass extraction with line-number-based coordinate resolution.
-
-    Args:
-        line_index: dict of {line_num: {page, text, words}} from Textract
-
-    Returns a dict with universal fields at the top level, a "producers" array
-    with per-producer field extractions, and a "songs" array with per-song field
-    extractions — each entry enriched with bounding box coords where found.
-    """
+    """Single-pass extraction with line-number-based coordinate resolution."""
     prompt = build_extraction_prompt(line_index)
-    print("[DEBUG] Sending extraction prompt to OpenAI (single-pass)...")
 
     response = client.chat.completions.create(
         model="gpt-4-1106-preview",
         messages=[
             {"role": "system", "content": "You are an intelligent document extraction assistant."},
-            {"role": "user", "content": prompt}
+            {"role": "user", "content": prompt},
         ],
-        temperature=0.2
+        temperature=0.2,
     )
 
     content = _strip_markdown_fences(response.choices[0].message.content)
-    print(f"[DEBUG] Received extraction response from OpenAI: {content[:300]}...")
 
     try:
         extracted_fields = json.loads(content)
     except json.JSONDecodeError as e:
         print(f"[ERROR] Failed to parse GPT response as JSON: {e}")
-        print(f"[ERROR] Raw content: {content}")
         return {"error": f"Failed to parse extraction results: {e}"}
 
     if line_index:
@@ -247,8 +258,7 @@ def extract_field_information(line_index):
 
             for song in extracted_fields.get("songs", []):
                 _apply_coords(song, line_index, skip_keys={"song_title", "is_rate_explicit"})
-
         except Exception as e:
-            print(f"[WARNING] Failed to add coordinates: {e}")
+            print(f"[WARNING] Coordinate resolution failed: {e}")
 
     return extracted_fields

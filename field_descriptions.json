@@ -1,30 +1,30 @@
 {
     "Document Name": {
-        "description": "Construct the **Document Name** from metadata in the document.\n\nFormat: \"(artist_name) - (project_or_song_name) (execution_status)\"\n- Use project name if present; otherwise use song title(s).\n- Multiple songs: comma-separate them.\n- Execution status: FX (Fully-Executed), PX (Partially-Executed), NX (No Execution).\n\nReturn a single constructed string, e.g. \"Drake - Certified Lover Boy FX\"."
+        "description": "Construct the **Document Name** from metadata in the document.\n\nFormat: \"(artist_name) - (project_or_song_name) (execution_status)\"\n- Use project name if present; otherwise use song title(s).\n- Multiple songs: comma-separate them.\n- Execution status: FX (Fully-Executed), PX (Partially-Executed), NX (No Execution).\n\nReturn a single constructed string, e.g. \"Drake - Certified Lover Boy FX\".\n\nIMPORTANT: Do NOT include prefixes like \"Document Name:\" — return only the constructed value.\nSet \"lines\" to the line(s) containing the artist name and song/project title used to construct the value."
     },
     "Execution Status": {
         "description": "Determine the **Execution Status** by analyzing the signature section.\n\n- All parties signed → \"FX\"\n- Client signed but counterparty did not → \"PX\"\n- Counterparty signed but client did not → \"PX\"\n- No signatures found → \"NX\"\n\nReturn only: \"FX\", \"PX\", or \"NX\"."
     },
     "Song Title": {
-        "description": "Extract the **Song Title(s)** from the agreement.\n\nLocations: first 1-3 paragraphs (\"master recording entitled '...'\"), schedules, appendices, or tables (\"Schedule A\", \"List of Masters\").\n\nReturn ONLY the title(s) — not surrounding phrases. Multiple titles: comma-separate them."
+        "description": "Extract the **Song Title(s)** from the agreement.\n\nLocations: first 1-3 paragraphs (\"master recording entitled '...'\"), schedules, appendices, or tables.\n\nReturn ONLY the title(s) — not surrounding phrases. Multiple titles: comma-separate them.\nSet \"lines\" to the line(s) where the titles themselves appear, not header lines."
     },
     "Artist Name": {
-        "description": "Extract the **Artist Name**. Found in the first paragraph, immediately followed by (\"Artist\") or similar label.\n\nReturn ONLY the name — no quotes, labels, or legal names."
+        "description": "Extract the **Artist Name** — the professional/stage name (p/k/a).\n\nFound in the first paragraph near (\"Artist\") or similar label. If both a legal name and a p/k/a are given, return ONLY the p/k/a.\n\nReturn ONLY the name — no quotes, labels, or legal names.\nSet \"lines\" to the line where the name itself appears, not the line introducing it."
     },
     "Single/Multisong Line": {
-        "description": "Extract the **scope phrase** from the first two paragraphs indicating whether this is a single-song, multi-song, or project agreement.\n\nExamples: \"one (1) master recording\", \"multiple master recordings\", \"an album entitled 'XYZ'\"."
+        "description": "Extract the **scope phrase** verbatim from the first two paragraphs indicating single-song, multi-song, or project scope.\n\nReturn ONLY what the document says, e.g. \"Multi-Song arrangement\" or \"one (1) master recording\". Do NOT append counts, track numbers, or any information not in the phrase itself."
     },
     "Client Party": {
         "description": "Extract the **Client Party** name — the individual or entity addressed as \"you\" or \"Producer\" in the opening paragraph.\n\nReturn ONLY the name."
     },
     "Direct Counterparty": {
-        "description": "Extract the **Direct Counterparty** — the party issuing the agreement, referred to as \"we\", \"us\", or \"Company\" in the opening paragraphs.\n\nReturn ONLY the entity name."
+        "description": "Extract the **Direct Counterparty** — the party issuing the agreement, referred to as \"we\", \"us\", or \"Company\".\n\nReturn ONLY the entity name."
     },
     "Alternative Counterparties": {
-        "description": "Extract names of any **Alternative Counterparties** — other entities involved (labels, distributors, licensees) beyond the direct counterparty.\n\nFound in rights assignment clauses, revenue flow sections, SoundExchange LOD, Schedule A, or signature blocks.\n\nReturn a comma-separated list of entity names, or \"not found\"."
+        "description": "Extract names of any **Alternative Counterparties** — other entities involved beyond the direct counterparty.\n\nFound in rights assignment clauses, revenue flow sections, SoundExchange LOD, Schedule A, or signature blocks.\n\nReturn a comma-separated list of entity names, or \"not found\".\nSet \"lines\" to ONLY the lines containing the entity names, not the surrounding clause."
     },
     "Classification of Recoupment Language": {
-        "description": "Extract the **recoupment clause** — the language defining when the Producer becomes eligible for royalty payments.\n\nLook for: \"No royalty shall be payable until...\", \"After recoupment of Recording Costs...\", \"retroactively from record one after...\".\n\nReturn the full verbatim sentence(s) explaining the recoupment mechanism."
+        "description": "Extract the **recoupment clause** — the language defining when the Producer becomes eligible for royalty payments.\n\nLook for: \"No royalty shall be payable until...\", \"After recoupment of Recording Costs...\", \"retroactively from record one after...\".\n\nReturn the verbatim clause text, excluding section headers/numbers (e.g. omit \"4.1.7 Classification of Recoupment Language.\")."
     },
     "Effective Date": {
         "description": "Extract the **Effective Date** from the first paragraph.\n\nIf multiple dates on page 1, select the one labeled \"Effective as of...\" or \"Effective Date:\".\n\nReturn ONLY the date string."
@@ -36,32 +36,32 @@
         "description": "Extract the **parent company** that owns or controls the label in this agreement.\n\nLook for: \"[Label], a division of [Parent]\", \"owned by\", \"an imprint of\", \"subsidiary of\".\n\nReturn ONLY the parent company name (e.g. \"Warner Music Group\", \"Sony Music Entertainment\")."
     },
     "Lawyer Information": {
-        "description": "Extract **Lawyer Information** for both parties.\n\nLook for: \"C/O [Firm]\", \"represented by [Name]\", address blocks near party names.\n\nReturn as: {\"client_lawyer\": \"Name, Firm, Address\", \"counterparty_lawyer\": \"Name, Firm, Address\"}.\n\nAssign based on proximity to the Client Party / Producer name, or explicit labels like \"Label's counsel\"."
+        "description": "Extract **Lawyer Information** for both parties.\n\nLook for: \"C/O [Firm]\", \"represented by [Name]\", address blocks near party names.\n\nReturn as: {\"client_lawyer\": \"Name, Firm, Address\", \"counterparty_lawyer\": \"Name, Firm, Address\"}.\n\nAssign based on proximity to the Client Party / Producer name, or explicit labels like \"Label's counsel\".\nIf no lawyer info is found, return \"not found\"."
     },
     "Producer Royalty Points": {
-        "description": "Extract the **initial/base Producer Royalty rate(s)** — one entry per base rate.\n\nIMPORTANT: Only the INITIAL rate. Escalated/bump rates belong in **Bumps**. If \"1.5% escalating to 2.0% after Gold\", only return \"1.5%\" here.\n\nReturn each rate as a SHORT value (e.g. \"3%\", \"2.8% of NAR\"). Do NOT combine multiple rates into one string.",
+        "description": "Extract the **initial/base Producer Royalty rate(s)** — one entry per base rate.\n\nIMPORTANT: Only the INITIAL rate. Escalated/bump rates belong in **Bumps**. If \"1.5% escalating to 2.0% after Gold\", only return \"1.5%\" here.\n\nReturn the percentage only (e.g. \"3%\", \"2.0%\"). Do NOT append the royalty type — that belongs in Type of Royalty.\nDo NOT combine multiple rates into one string — return one array entry per rate.",
         "is_array": true
     },
     "Type of Royalty": {
-        "description": "Determine the **royalty calculation basis**. Only two valid values:\n\n- \"NAR\" — Net Artist Rate/Royalties (producer gets % of artist's royalties)\n- \"PPD\" — Published Price to Dealers (producer gets % of wholesale price)\n\nLook for explicit mentions of \"net artist royalties/rate\" (→ NAR) or \"PPD\"/\"Published Price to Dealers\" (→ PPD).\n\nReturn \"NAR\", \"PPD\", or \"not found\". Do not guess."
+        "description": "Determine the **royalty calculation basis**. Only two valid values:\n\n- \"NAR\" — Net Artist Rate/Royalties\n- \"PPD\" — Published Price to Dealers\n\nReturn \"NAR\", \"PPD\", or \"not found\". Do not guess.\nSet \"lines\" to the line where \"NAR\"/\"Net Artist Royalty\" or \"PPD\" appears, not the section header."
     },
     "Third Party Money": {
-        "description": "Extract **Third Party Money** directives from the SoundExchange LOD section.\n\nReturn each as a SHORT value — just the amount/percentage (e.g. \"9.47%\", \"$1,500\"). Do NOT include surrounding context.",
+        "description": "Extract **Third Party Money** — amounts payable to the producer from third-party sources.\n\nReturn each as a SHORT value — just the amount (e.g. \"$20,000\", \"9.47%\"). Do NOT include surrounding context or section headers.",
         "is_array": true
     },
     "Organization Counting Units": {
         "description": "Check if the contract uses **USNRC** (U.S. Normal Retail Channels) for measuring sales.\n\nLook for: \"USNRC Net Sales\", \"Net Sales (USNRC)\", \"sales through U.S. Normal Retail Channels\".\n\nReturn \"USNRC\" or \"not found\"."
     },
     "Producer Advance Legal Recoupment": {
-        "description": "Extract the **Producer Advance amount** — the dollar value only.\n\nLook near: \"Producer Advance\", \"Advance payable to Producer\", \"Advance of $X\".\n\nReturn ONLY the monetary value (e.g. \"$10,000\")."
+        "description": "Extract the **Producer Advance amount** — the dollar value only.\n\nLook near: \"Producer Advance\", \"Advance payable to Producer\", \"Advance of $X\".\n\nReturn ONLY the monetary value (e.g. \"$10,000\").\nSet \"lines\" to the line where the dollar amount appears, not the header line."
     },
     "Recoupment Classification": {
-        "description": "Extract the **Recoupment Classification** — how the advance is recouped.\n\nValid values: \"non-returnable recoupable\", \"partially-recoupable\", \"fully-recoupable\".\n\nFound adjacent to the advance amount. Return ONLY one of the three values above, or \"not found\"."
+        "description": "Extract the **Recoupment Classification** — how the advance is recouped.\n\nValid values: \"Non-Returnable Recoupable\", \"Partially-Recoupable\", \"Fully-Recoupable\".\n\nFound adjacent to the advance amount. Return ONLY one of the three values above, or \"not found\"."
     },
     "Legal Advance": {
-        "description": "Extract the **Legal Advance** amount — the dollar value paid for legal fees.\n\nLook near: \"legal advance\", \"advance for legal fees\", \"contribution toward legal costs\".\n\nReturn ONLY the monetary value (e.g. \"$5,000\")."
+        "description": "Extract the **Legal Advance** amount — the dollar value paid for legal fees.\n\nLook near: \"legal advance\", \"advance for legal fees\", \"contribution toward legal costs\".\n\nReturn ONLY the monetary value (e.g. \"$5,000\").\nSet \"lines\" to the line where the dollar amount appears, not the header line."
     },
     "Bumps": {
-        "description": "Extract the **royalty escalation clause (Bumps)** — conditional increases above the base rate.\n\nA bump always has BOTH an escalated rate AND a trigger condition. Do NOT include the initial/base rate (that's in Producer Royalty Points).\n\nReturn the verbatim escalation clause, e.g. \"escalating to 2.0% NAR after RIAA Gold, 2.5% after Platinum\"."
+        "description": "Extract the **full royalty escalation schedule (Bumps)** — ALL tiers including the base rate.\n\nReturn the complete schedule verbatim, e.g. \"Base: 3.5% NAR; Gold (500K): 4.0% NAR; Platinum (1M): 4.5% NAR\".\n\nInclude every tier listed (base through highest). Set \"lines\" to ALL lines containing the schedule."
     }
 }

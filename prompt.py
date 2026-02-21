@@ -119,14 +119,7 @@ def _build_song_example(placeholder_title, indent="    "):
 
 
 def build_extraction_prompt(line_index):
-    """Single-pass prompt: identify producers + songs and extract all fields.
-
-    Phases:
-      1   — Identify all producer parties
-      1.5 — Identify all songs/masters covered by the agreement
-      2   — Extract universal fields (once for the whole agreement)
-      3   — Extract producer-specific fields for each producer
-      4   — Extract song-specific fields for each song
+    """Build a single-pass extraction prompt for GPT.
 
     Args:
         line_index: dict of {line_num: {page, text, words}} from Textract
@@ -150,7 +143,32 @@ def build_extraction_prompt(line_index):
     song_example_1 = _build_song_example("<Song Title 1>")
     song_example_2 = _build_song_example("<Song Title 2>")
 
-    return f"""Extract structured data from a music royalty contract. Process in the following order:
+    return f"""Extract structured data from a music royalty contract.
+
+CRITICAL RULES — READ BEFORE EXTRACTING
+========================================
+LINE REFERENCES: Each contract line is prefixed [LN]. For every field, "lines" must list
+ONLY the line(s) where the returned value text physically appears. The value you return
+MUST be findable on those lines. NEVER reference a header/label line when the value is on
+the next line.
+  WRONG: value "$60,000", lines → "3.6 Legal Advance. Upon full execution, Label shall pay..."
+  RIGHT: value "$60,000", lines → "advance of Sixty Thousand Dollars ($60,000.00) recoupable..."
+
+VALUE PRECISION: Return ONLY the specific data point — not the surrounding sentence, section
+header, label prefix, or any additional context. Do NOT rephrase, summarize, or append info
+from other fields.
+  WRONG: "The Artist for whom the Master Recordings were produced is DEVON HARRIS, p/k/a Quay Global"
+  RIGHT: "Quay Global"
+  WRONG: "Multi-Song, 3 Tracks"  (appended track count)
+  RIGHT: "Multi-Song arrangement"  (verbatim from document)
+  WRONG: "2.0% of NAR"  (appended royalty type from a different field)
+  RIGHT: "2.0%"
+
+VALUES MUST BE VERBATIM from the document text. NEVER invent, infer, combine, or guess.
+Found field: {{"value": "...", "lines": [L1, L2]}}
+Missing field: {{"value": "not found", "lines": []}}
+Array fields ({array_fields_list}): [{{"value": "...", "lines": [L1]}}, ...]
+NEVER omit a field. Return valid JSON ONLY — no Markdown, no explanation.
 
 PHASE 1 — IDENTIFY PRODUCERS
 Scan the opening paragraph and signature block for every producer party.
@@ -161,7 +179,6 @@ Rules:
 - Use EXACT names from the document
 - Always identify at least one; use "Producer" only if no name exists
 - NEVER include the Artist, Label, or Distributor as a producer
-- One entry per producer in the "producers" array
 
 PHASE 2 — IDENTIFY SONGS
 Scan the entire document for every song/master recording.
@@ -169,7 +186,7 @@ Scan the entire document for every song/master recording.
 - Schedules, appendices, tables ("Schedule A", "List of Masters")
 Rules:
 - Use EXACT titles from the document
-- Always identify at least one; one entry per song in the "songs" array
+- Always identify at least one
 
 PHASE 3 — UNIVERSAL FIELDS (once for the whole agreement)
 {universal_field_text}
@@ -191,29 +208,6 @@ Fields: {song_field_names}
 - "is_rate_explicit": true if explicitly stated for this song; false if from a blanket clause
 - Blanket values: DUPLICATE into every song entry
 - Missing: {{"value": "not found", "lines": []}}
-
-EXTRACTION RULES
-----------------
-1. Return ONLY the specific data point requested — not the surrounding sentence or context.
-   WRONG: "The Artist for whom the Master Recordings were produced is DEVON HARRIS, p/k/a Quay Global"
-   RIGHT: "Quay Global"
-   WRONG: "Producer shall receive a royalty of 3% of NAR"
-   RIGHT: "3% of NAR"
-2. Values must be VERBATIM from the document where applicable
-3. Found field:   {{"value": "...", "lines": [L1, L2]}}
-4. Missing field: {{"value": "not found", "lines": []}}
-5. Array fields ({array_fields_list}): [{{"value": "...", "lines": [L1]}}, ...] or []
-6. NEVER invent, infer, or guess values
-7. NEVER omit a field
-8. Return valid JSON ONLY — no Markdown, no explanation
-
-LINE NUMBERING
---------------
-Each contract line is prefixed [LN] where N is a global line number.
-Set "lines" to ONLY the line(s) where the extracted value text appears.
-Do NOT include nearby context lines, headers, or labels — only lines containing the value itself.
-If a value spans multiple lines, include all of them (e.g. "lines": [47, 48, 49]).
-Use the EXACT line numbers from the [LN] prefixes.
 
 OUTPUT FORMAT
 -------------
