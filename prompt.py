@@ -221,6 +221,10 @@ EXTRACTION RULES (apply to every field)
 5. NEVER invent, infer, or guess values not explicitly present in the document
 6. NEVER omit a field — every listed field must appear in the output
 7. Return valid JSON ONLY — no Markdown fences, no explanation, no preamble
+8. page_number for song-specific and producer-specific fields must be the page
+   where THAT song's or producer's OWN section states the value — not a page
+   where the same word or phrase happens to appear in a different song's section
+   or in an unrelated clause
 
 REQUIRED OUTPUT FORMAT
 ----------------------
