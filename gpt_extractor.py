@@ -79,28 +79,29 @@ def _group_bboxes_by_line(bboxes):
     return [_merge_bboxes(line) for line in lines]
 
 
-def _build_label_bbox_map(field_names, page_blocks):
-    """Find each field label's bounding box using anchor-based sequence matching.
+def _build_label_map(field_names, page_blocks):
+    """Find each field label's bounding box and block index.
 
     Uses _find_anchor on the first 3 clean words of each field name so that
     multi-word labels like "Producer Advance Legal Recoupment" are located
     reliably. Single-word matching is unreliable because common words such as
     "recoupment" or "legal" appear throughout the contract in unrelated contexts.
 
-    Returns a dict of {field_name: bbox} for labels found in page_blocks.
+    Returns a dict of {field_name: {"bbox": ..., "idx": int}} so callers have
+    both the position (for euclidean distance) and the block index (for
+    label-adjacent forward search).
     """
-    label_bboxes = {}
+    label_map = {}
     for name in field_names:
         name_words = _clean_for_compare(name).split()
         if not name_words:
             continue
-        # Anchor on the first 3 words — specific enough to locate the label
-        # without being so long that minor OCR differences cause a miss.
         anchor_text = " ".join(name_words[:min(3, len(name_words))])
         hits = _find_anchor(anchor_text, page_blocks)
         if hits:
-            label_bboxes[name] = page_blocks[hits[0][0]].get("bbox")
-    return label_bboxes
+            idx = hits[0][0]
+            label_map[name] = {"bbox": page_blocks[idx].get("bbox"), "idx": idx}
+    return label_map
 
 
 def _find_zone_in_blocks(zone_text, page_blocks):
@@ -237,12 +238,27 @@ def _blocks_for_clean_words(page_blocks, start_idx, num_clean_words):
     return j - start_idx, words_so_far
 
 
-def find_evidence_location(evidence_text, page_blocks, label_bbox=None):
+# How many blocks ahead of the label to search in label-adjacent mode.
+# A sentence or two is typically 10–20 blocks; 25 gives comfortable headroom.
+_LABEL_ADJACENT_WINDOW = 25
+
+
+def find_evidence_location(evidence_text, page_blocks, label_bbox=None,
+                           label_block_idx=None):
     """Find per-line bounding boxes for the given evidence text in WORD blocks.
 
     Expects page_blocks to be pre-sorted in reading order.
-    - Short values (<=8 clean words): sequence matching with label proximity.
+    - Short values (<=8 clean words): label-adjacent search then full-page fallback.
     - Long values (>8 clean words): anchor on first/last N clean words and span.
+
+    label_block_idx
+        When provided, short-value matching searches the _LABEL_ADJACENT_WINDOW
+        blocks starting at label_block_idx FIRST.  This is far more reliable than
+        euclidean-distance selection when the value is ambiguous (e.g. "NAR"
+        appears many times on a page) because the correct occurrence almost always
+        follows its field label in reading order.  Euclidean distance fails because
+        a value at the far-right end of the label's own line can be geometrically
+        further than a same-named value on the next line.
 
     All text comparison uses _clean_for_compare which strips ALL punctuation so
     that GPT tokens like "NAR;" match Textract's separate ["NAR", ";"] blocks,
@@ -305,7 +321,44 @@ def find_evidence_location(evidence_text, page_blocks, label_bbox=None):
 
         # Last resort: fall through to short-value matching below
 
-    # ── Short values: sequence matching ──
+    # ── Short values: label-adjacent forward search ──
+    # When we know where the label is, scan the next _LABEL_ADJACENT_WINDOW blocks
+    # for the first sequence match.  This avoids the euclidean-distance failure
+    # mode where the correct "(NAR)" at the end of the label's own line loses to a
+    # "NAR" in the next paragraph that happens to be closer by pixel distance.
+    if num_clean_words <= LONG_VALUE_THRESHOLD and label_block_idx is not None:
+        adj_end = min(num_blocks, label_block_idx + _LABEL_ADJACENT_WINDOW)
+        adj_blocks = page_blocks[label_block_idx:adj_end]
+        adj_len = len(adj_blocks)
+        max_adj = num_clean_words + 3
+
+        for i in range(adj_len):
+            combined = ""
+            for length in range(1, min(max_adj + 1, adj_len - i + 1)):
+                rw = adj_blocks[i + length - 1].get("text", "")
+                cw = _clean_for_compare(rw)
+                if cw:
+                    combined = f"{combined} {cw}" if combined else cw
+                cl = combined.strip()
+
+                score = 0
+                if evidence_clean == cl:
+                    score = 1.0
+                elif evidence_clean in cl:
+                    score = len(evidence_clean) / len(cl) if cl else 0
+                elif cl in evidence_clean and len(cl) > 3:
+                    score = len(cl) / len(evidence_clean) * 0.7
+
+                if score >= 0.8:
+                    bboxes = [adj_blocks[i + j]["bbox"]
+                              for j in range(length) if adj_blocks[i + j].get("bbox")]
+                    result = _group_bboxes_by_line(bboxes) or None
+                    if result:
+                        return result
+                if len(cl) > len(evidence_clean) * 1.5 and score == 0:
+                    break
+
+    # ── Short values: full-page sequence matching with label-proximity fallback ──
     max_words = num_clean_words + 3
     matches = []  # (start_index, length, score)
 
@@ -444,12 +497,15 @@ def _apply_coords_to_fields(fields_dict, page_blocks, skip_keys=None,
 
     for page_num, fields in fields_by_page.items():
         sorted_blocks = _get_zoned_blocks(page_blocks.get(page_num, []))
-        label_map = _build_label_bbox_map([name for name, _ in fields], sorted_blocks)
+        label_map = _build_label_map([name for name, _ in fields], sorted_blocks)
 
         for field_name, field_data in fields:
             value = field_data["value"]
+            lentry = label_map.get(field_name)
             line_bboxes = find_evidence_location(
-                value, sorted_blocks, label_bbox=label_map.get(field_name)
+                value, sorted_blocks,
+                label_bbox=lentry["bbox"] if lentry else None,
+                label_block_idx=lentry["idx"] if lentry else None,
             )
 
             # ── Page fallback: try ± 1 page when GPT reported the wrong page ──
@@ -461,7 +517,6 @@ def _apply_coords_to_fields(fields_dict, page_blocks, skip_keys=None,
                     fb_blocks = _get_zoned_blocks(fb_raw)
                     line_bboxes = find_evidence_location(value, fb_blocks)
                     if line_bboxes is not None:
-                        # Update page_number so the viewer renders on the correct page
                         field_data["page_number"] = page_num + delta
                         break
 
