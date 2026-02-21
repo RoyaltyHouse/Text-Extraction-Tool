@@ -150,97 +150,73 @@ def build_extraction_prompt(line_index):
     song_example_1 = _build_song_example("<Song Title 1>")
     song_example_2 = _build_song_example("<Song Title 2>")
 
-    return f"""You are an intelligent document analysis agent. Extract structured data from a music royalty contract in a single pass.
+    return f"""Extract structured data from a music royalty contract. Process in the following order:
 
-Process the document in the following order:
+PHASE 1 — IDENTIFY PRODUCERS
+Scan the opening paragraph and signature block for every producer party.
+- Names/entities followed by ("Producer"), ("you"), or the letter's addressee
+- Multiple C/O entries tied to different names
+- "each of you", "collectively", or listed co-producers
+Rules:
+- Use EXACT names from the document
+- Always identify at least one; use "Producer" only if no name exists
+- NEVER include the Artist, Label, or Distributor as a producer
+- One entry per producer in the "producers" array
 
-PHASE 1 — IDENTIFY PRODUCER PARTIES
------------------------------------
-Before extracting any fields, scan the opening paragraph and signature block to identify every producer who is a named party to this agreement.
+PHASE 2 — IDENTIFY SONGS
+Scan the entire document for every song/master recording.
+- Song titles in opening paragraphs ("master recording entitled '...'")
+- Schedules, appendices, tables ("Schedule A", "List of Masters")
+Rules:
+- Use EXACT titles from the document
+- Always identify at least one; one entry per song in the "songs" array
 
-Look for:
-- Names or entities followed by ("Producer"), ("you"), or defined as the letter's addressee
-- Multiple C/O entries tied to different producer or company names
-- Language like "each of you", "collectively", or a list of named co-producers
-- Entities signing as producers in the signature block
-
-Producer identification rules:
-- Use the EXACT name as written in the document — never paraphrase or abbreviate
-- Always identify at least one producer; use "Producer" only if no name can be found
-- NEVER include the Artist, Label, Counterparty/Publisher, or Distributor as a producer
-- If multiple entities share one producer role (e.g. a joint venture), treat them as one combined entry
-- The "producers" array in your output must contain EXACTLY one entry per producer you identify here
-
-PHASE 1.5 — IDENTIFY ALL SONGS
---------------------------------
-Scan the entire document to identify every song/master recording covered by this agreement.
-
-Look for:
-- Song titles in the opening paragraph (e.g., "master recording entitled 'REAL LOVE'")
-- Schedules, appendices, or tables listing compositions (Schedule A, Schedule 1, "List of Masters", etc.)
-- ISRC codes or track numbers associated with song names
-- Language like "the following compositions:", "masters listed herein:", or "as set forth in Schedule"
-
-Song identification rules:
-- Use the EXACT title as written in the document — never paraphrase or abbreviate
-- Always identify at least one song
-- The "songs" array in your output must contain EXACTLY one entry per song identified
-
-PHASE 2 — UNIVERSAL FIELDS (extract once for the whole agreement)
------------------------------------------------------------------
+PHASE 3 — UNIVERSAL FIELDS (once for the whole agreement)
 {universal_field_text}
 
-PHASE 3 — PRODUCER-SPECIFIC FIELDS (extract for EACH producer)
---------------------------------------------------------------
+PHASE 4 — PRODUCER-SPECIFIC FIELDS (for EACH producer)
 {producer_field_text}
 
-Producer-specific rules:
-- Create one entry in the "producers" array for EACH producer identified in Phase 1
-- CRITICAL SCOPING: For each producer, extract field values from the section or paragraph that specifically pertains to that producer. Do NOT pull values from another producer's section.
-- If a term applies identically to all producers (e.g. a shared royalty clause), DUPLICATE the value into every producer's entry — never use a shared object
-- If a term exists for one producer but not another, return {{"value": "not found", "lines": []}} for the absent producer
-- Include ALL producer-specific fields for every producer, even when the value is "not found"
+- Extract from the section pertaining to THAT producer only
+- If a term applies to all producers, DUPLICATE it into every entry
+- Missing: {{"value": "not found", "lines": []}}
 
-PHASE 4 — SONG-SPECIFIC FIELDS (extract for EACH song)
--------------------------------------------------------
-Extract the following fields for each song, using the same definitions as Phase 3:
-{song_field_names}
+PHASE 5 — SONG-SPECIFIC FIELDS (for EACH song)
+Fields: {song_field_names}
+(Same definitions as Phase 4)
 
-Song-specific rules:
-- Create one entry in the "songs" array for EACH song identified in Phase 1.5
-- CRITICAL SCOPING: For each song, extract field values ONLY from the section or paragraph that specifically discusses that song (e.g. a per-track schedule, numbered subsection like "4.1 STREETS KRAZY", or a table row for that song). Do NOT pull values from another song's section or from a different field's subsection.
-- When extracting "Producer Royalty Points" for a song, use the Producer Royalty Points subsection for that song — NOT the Bumps subsection. Include the per-producer allocation/breakdown when it is stated alongside the aggregate rate (e.g. "3.5% of NAR. Allocated: Producer A 2.0% NAR; Producer B 1.5% NAR").
-- When extracting "Type of Royalty" for a song, use the Type of Royalty subsection for that song — do NOT copy the value from the Producer Royalty Points or Bumps subsection.
-- Set "is_rate_explicit": true if the field value is explicitly stated for this specific song (e.g. per-track schedule or table with individual rates)
-- Set "is_rate_explicit": false if the value comes from a blanket clause applying to all songs — still populate all fields with those blanket values
-- If a blanket value applies to all songs, DUPLICATE it into every song's entry — never use a shared object
-- If a field genuinely does not exist for a specific song (and no blanket value applies), return {{"value": "not found", "lines": []}} — do NOT borrow values from other songs' sections
-- Include ALL song-specific fields for every song, even when the value is "not found"
+- Extract from the section for THAT song only (per-track schedule, subsection, table row)
+- For "Producer Royalty Points": use the royalty subsection, NOT the Bumps subsection. Include per-producer breakdown if stated alongside the aggregate rate.
+- For "Type of Royalty": use the type of royalty subsection, NOT the royalty points or bumps subsection.
+- "is_rate_explicit": true if explicitly stated for this song; false if from a blanket clause
+- Blanket values: DUPLICATE into every song entry
+- Missing: {{"value": "not found", "lines": []}}
 
-EXTRACTION RULES (apply to every field)
----------------------------------------
-1. Values must be VERBATIM from the document — never paraphrase, summarize, or interpret
-2. Found field:   {{"value": "exact text from document", "lines": [L1, L2]}}
-   where L1, L2 are the [LN] line numbers from the contract text below
-3. Missing field: {{"value": "not found", "lines": []}}
-4. Array-type fields ({array_fields_list}):
-   - Return a JSON array of individual verbatim entries: [{{"value": "...", "lines": [L1]}}, ...]
-   - One entry per distinct occurrence in the document
-   - Return [] if none found
-   - NEVER combine multiple values into a single string
-5. NEVER invent, infer, or guess values not explicitly present in the document
-6. NEVER omit a field — every listed field must appear in the output
-7. Return valid JSON ONLY — no Markdown fences, no explanation, no preamble
+EXTRACTION RULES
+----------------
+1. Return ONLY the specific data point requested — not the surrounding sentence or context.
+   WRONG: "The Artist for whom the Master Recordings were produced is DEVON HARRIS, p/k/a Quay Global"
+   RIGHT: "Quay Global"
+   WRONG: "Producer shall receive a royalty of 3% of NAR"
+   RIGHT: "3% of NAR"
+2. Values must be VERBATIM from the document where applicable
+3. Found field:   {{"value": "...", "lines": [L1, L2]}}
+4. Missing field: {{"value": "not found", "lines": []}}
+5. Array fields ({array_fields_list}): [{{"value": "...", "lines": [L1]}}, ...] or []
+6. NEVER invent, infer, or guess values
+7. NEVER omit a field
+8. Return valid JSON ONLY — no Markdown, no explanation
 
 LINE NUMBERING
 --------------
-Each line of the contract text below is prefixed with [LN] where N is a global line number.
-When you extract a value, set "lines" to the line number(s) where that value appears.
-If a value spans multiple lines, include ALL relevant line numbers (e.g. "lines": [47, 48, 49]).
-Use the EXACT line numbers from the [LN] prefixes — do not guess or calculate.
+Each contract line is prefixed [LN] where N is a global line number.
+Set "lines" to ONLY the line(s) where the extracted value text appears.
+Do NOT include nearby context lines, headers, or labels — only lines containing the value itself.
+If a value spans multiple lines, include all of them (e.g. "lines": [47, 48, 49]).
+Use the EXACT line numbers from the [LN] prefixes.
 
-REQUIRED OUTPUT FORMAT
-----------------------
+OUTPUT FORMAT
+-------------
 {{
   "Document Name": {{"value": "...", "lines": [1]}},
   "Execution Status": {{"value": "...", "lines": [1]}},
@@ -263,15 +239,11 @@ REQUIRED OUTPUT FORMAT
   ]
 }}
 
-The "producers" array must contain exactly one entry per producer identified in Phase 1.
-The "songs" array must contain exactly one entry per song identified in Phase 1.5.
-Single-producer agreements have exactly one producer entry. Single-song agreements have exactly one song entry — do not add placeholder entries.
+One producer entry per producer identified. One song entry per song identified. No placeholders.
 
 CONTRACT TEXT
 -------------
 \"\"\"
 {contract_text}
 \"\"\"
-
-Always respond with valid JSON only. Do not include Markdown formatting or explanation.
 """.strip()
