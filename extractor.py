@@ -13,16 +13,16 @@ s3 = boto3.client('s3')
 textract = boto3.client('textract')
 
 
-def extract_text_from_pdf(text, blocks=None):
-    if text is None:
+def extract_text_from_pdf(line_index):
+    if not line_index:
         return {"error": "No text provided for extraction"}
-    print("[DEBUG] Extraction started for text")
+    print("[DEBUG] Extraction started")
 
-    open_ai_Data = extract_field_information(text, blocks)
+    result = extract_field_information(line_index)
 
-    if isinstance(open_ai_Data, dict):
-        return open_ai_Data
-    return json.loads(open_ai_Data)
+    if isinstance(result, dict):
+        return result
+    return json.loads(result)
 
 
 def textract_text_image_by_image(file):
@@ -30,16 +30,10 @@ def textract_text_image_by_image(file):
     if isinstance(extraction_result, tuple) or not isinstance(extraction_result, dict):
         return extraction_result
 
-    # Handle new structure
-    extract = extraction_result.get("text", {})
-
-    if isinstance(extract, dict):
-        # If nested like {1: [...]} and only one page, unwrap it
-        if len(extract) == 1:
-            return next(iter(extract.values()))
-        else:
-            return [line for lines in extract.values() for line in lines]
-    return []
+    line_index = extraction_result.get("line_index", {})
+    if not line_index:
+        return []
+    return [entry["text"] for entry in line_index.values()]
 
 
 def extract_text_from_word(path):
@@ -94,36 +88,45 @@ def textract_lines_by_page_from_file(file, bucket=S3_BUCKET):
         blocks.extend(resp["Blocks"])
         next_token = resp.get("NextToken")
 
-    page_text_dict = {}
-    page_blocks_dict = {}
+    # Build ID -> block lookup for Relationship resolution
+    block_by_id = {b["Id"]: b for b in blocks if "Id" in b}
 
+    # Collect LINE blocks grouped by page, preserving Textract reading order
+    lines_by_page = {}
     for b in blocks:
         if b.get("BlockType") == "LINE" and "Text" in b:
             page_num = b.get("Page", 1)
-            text = b["Text"]
-            page_text_dict.setdefault(page_num, []).append(text)
+            lines_by_page.setdefault(page_num, []).append(b)
 
-        # Collect WORD blocks for precise coordinate matching
-        elif b.get("BlockType") == "WORD" and "Text" in b:
-            page_num = b.get("Page", 1)
-            text = b["Text"]
-            bbox = b.get("Geometry", {}).get("BoundingBox", {})
-            if bbox:
-                page_blocks_dict.setdefault(page_num, []).append({
-                    "text": text,
-                    "bbox": bbox
-                })
+    # Build line_index with global numbering and child WORD bboxes
+    line_index = {}
+    global_line_num = 1
+    for page_num in sorted(lines_by_page.keys()):
+        for line_block in lines_by_page[page_num]:
+            # Resolve child WORD blocks via Relationships
+            child_ids = []
+            for rel in line_block.get("Relationships", []):
+                if rel.get("Type") == "CHILD":
+                    child_ids.extend(rel.get("Ids", []))
 
-    if not any(page_text_dict.values()):
+            words = []
+            for cid in child_ids:
+                wb = block_by_id.get(cid)
+                if wb and wb.get("BlockType") == "WORD" and "Text" in wb:
+                    bbox = wb.get("Geometry", {}).get("BoundingBox", {})
+                    if bbox:
+                        words.append({"text": wb["Text"], "bbox": bbox})
+
+            line_index[global_line_num] = {
+                "page": page_num,
+                "text": line_block["Text"],
+                "words": words,
+            }
+            global_line_num += 1
+
+    if not line_index:
         return jsonify({"error": "No extractable text found in the document."}), 400
-    else:
-        sample_preview = []
-        for lines in page_text_dict.values():
-            sample_preview.extend(lines)
-            if len(sample_preview) >= 5:
-                break
-        print("[DEBUG] Sample extracted lines:", sample_preview[:5])
-        return {
-            "text": page_text_dict,
-            "blocks": page_blocks_dict
-        }
+
+    sample = [line_index[i]["text"] for i in sorted(line_index)[:5]]
+    print("[DEBUG] Sample extracted lines:", sample)
+    return {"line_index": line_index}

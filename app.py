@@ -61,10 +61,8 @@ def uploads():
             if "error" in extraction_result:
                 return jsonify(extraction_result), 400
 
-            page_text_dict = extraction_result.get("text", {})
-            page_blocks_dict = extraction_result.get("blocks", {})
-
-            preview = extract_text_from_pdf(page_text_dict, page_blocks_dict)
+            line_index = extraction_result.get("line_index", {})
+            preview = extract_text_from_pdf(line_index)
             results.append({
                 'file': file.filename,
                 "artist_id":artist_id,
@@ -89,7 +87,19 @@ def uploads():
                 "error": "File type not supported. Only PDF, JPEG, JGE, PNG is allowed."
             })
     if combined_text:
-        preview = extract_text_from_pdf(combined_text, blocks=None)
+        # Build a minimal line_index from image text (no word bboxes)
+        img_line_index = {}
+        ln = 1
+        for page_str, lines in combined_text.items():
+            page_num = int(page_str)
+            if isinstance(lines, list):
+                for line_text in lines:
+                    img_line_index[ln] = {"page": page_num, "text": line_text, "words": []}
+                    ln += 1
+            else:
+                img_line_index[ln] = {"page": page_num, "text": str(lines), "words": []}
+                ln += 1
+        preview = extract_text_from_pdf(img_line_index)
         results.append({
             'file': ", ".join(file_list),
             "artist_id":artist_id,
@@ -225,10 +235,8 @@ def extract_from_url():
         if "error" in extraction_result:
             return jsonify(extraction_result), 400
 
-        page_text_dict = extraction_result.get("text", {})
-        page_blocks_dict = extraction_result.get("blocks", {})
-
-        preview = extract_text_from_pdf(page_text_dict, page_blocks_dict)
+        line_index = extraction_result.get("line_index", {})
+        preview = extract_text_from_pdf(line_index)
         return jsonify({
             "url": file_url,
             "file": filename,

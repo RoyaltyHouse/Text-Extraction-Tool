@@ -8,157 +8,7 @@ load_dotenv()
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY2"))
 
-def _bbox_distance(bbox1, bbox2):
-    """Euclidean distance between the centres of two bounding boxes."""
-    cx1 = bbox1.get("Left", 0) + bbox1.get("Width", 0) / 2
-    cy1 = bbox1.get("Top", 0) + bbox1.get("Height", 0) / 2
-    cx2 = bbox2.get("Left", 0) + bbox2.get("Width", 0) / 2
-    cy2 = bbox2.get("Top", 0) + bbox2.get("Height", 0) / 2
-    return ((cx1 - cx2) ** 2 + (cy1 - cy2) ** 2) ** 0.5
-
-
-def _merge_bboxes(bboxes):
-    """Merge multiple bounding boxes into one encompassing rectangle.
-    Kept for label-proximity distance calculations only."""
-    if not bboxes:
-        return None
-    if len(bboxes) == 1:
-        return bboxes[0]
-
-    left = min(b["Left"] for b in bboxes)
-    top = min(b["Top"] for b in bboxes)
-    right = max(b["Left"] + b["Width"] for b in bboxes)
-    bottom = max(b["Top"] + b["Height"] for b in bboxes)
-
-    return {
-        "Left": left,
-        "Top": top,
-        "Width": right - left,
-        "Height": bottom - top
-    }
-
-
-# Fraction of page height used to decide whether two words are on the same line.
-_LINE_BUCKET_SIZE = 0.008
-
-
-def _group_bboxes_by_line(bboxes):
-    """Group bounding boxes into per-line merged rects.
-
-    Words whose vertical centre falls within _LINE_BUCKET_SIZE of each other
-    are considered to be on the same line. Each group is merged into one bbox
-    that spans only the words on that line, avoiding the wide empty rectangle
-    that a single merged bbox produces for multi-line text.
-
-    Returns a list of merged per-line bboxes, in top-to-bottom order.
-    """
-    if not bboxes:
-        return []
-
-    # Sort by vertical centre
-    def _vcenter(b):
-        return b["Top"] + b["Height"] / 2
-
-    sorted_boxes = sorted(bboxes, key=_vcenter)
-
-    lines = []  # list of lists of bboxes
-    for bbox in sorted_boxes:
-        vc = _vcenter(bbox)
-        # Try to add to an existing line bucket
-        placed = False
-        for line in lines:
-            line_vc = _vcenter(line[0])
-            if abs(vc - line_vc) <= _LINE_BUCKET_SIZE:
-                line.append(bbox)
-                placed = True
-                break
-        if not placed:
-            lines.append([bbox])
-
-    return [_merge_bboxes(line) for line in lines]
-
-
-def _build_label_bbox_map(field_names, page_blocks):
-    """Locate ALL occurrences of every field label on the page.
-
-    Returns {field_name: [bbox, bbox, ...]} — a list of every position where
-    the label appears, so callers can disambiguate against the NEAREST one.
-    This is critical for multi-song pages where "Producer Royalty Points"
-    appears once per song section — storing only the first would anchor all
-    songs' coordinates to Song 1's section.
-
-    Pass 1: multi-word sequence matching (e.g. "Type of Royalty") — high quality.
-    Pass 2: single-word fallback for fields not found in Pass 1.
-    """
-    field_lowers = {name: name.lower().strip() for name in field_names}
-    label_bboxes = {}   # field_name -> [bbox, ...]
-    found_multi = set()  # fields matched in Pass 1
-    num_blocks = len(page_blocks)
-
-    _MIN_MULTI_SCORE = 0.85
-
-    # Pass 1: multi-word label matching — collect ALL occurrences
-    for name, field_lower in field_lowers.items():
-        field_words = field_lower.split()
-        if len(field_words) < 2:
-            continue
-        window = len(field_words)
-        for i in range(num_blocks - window + 1):
-            block_words = [
-                _normalize(page_blocks[i + j].get("text", "")).lower().strip()
-                for j in range(window)
-            ]
-            combined = " ".join(block_words)
-
-            if field_lower == combined:
-                score = 1.0
-            elif field_lower in combined:
-                score = len(field_lower) / len(combined) * 0.95
-            elif combined in field_lower and len(combined) > 5:
-                score = len(combined) / len(field_lower) * 0.9
-            else:
-                continue
-
-            if score >= _MIN_MULTI_SCORE:
-                bboxes = [
-                    page_blocks[i + j]["bbox"]
-                    for j in range(window)
-                    if page_blocks[i + j].get("bbox")
-                ]
-                merged = _merge_bboxes(bboxes)
-                if merged:
-                    label_bboxes.setdefault(name, []).append(merged)
-                    found_multi.add(name)
-
-    # Pass 2: single-word fallback — only for fields NOT found in Pass 1
-    for block in page_blocks:
-        block_text = block.get("text", "").lower().strip()
-        if not block_text or len(block_text) < 2:
-            continue
-
-        for name, field_lower in field_lowers.items():
-            if name in found_multi:
-                continue
-            bbox = block.get("bbox")
-            if not bbox:
-                continue
-            if field_lower == block_text:
-                label_bboxes.setdefault(name, []).append(bbox)
-            elif field_lower in block_text:
-                score = len(field_lower) / len(block_text)
-                if score >= 0.8:
-                    label_bboxes.setdefault(name, []).append(bbox)
-
-    return label_bboxes
-
-
-LONG_VALUE_THRESHOLD = 8  # words — above this, use anchor matching
-
-# Characters considered pure punctuation when filtering anchor/block tokens.
-_PUNCT_SET = set(r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~""")
-
 # Characters that Textract and GPT represent differently.
-# Keys are unicode variants; values are the canonical ASCII replacement.
 _CHAR_NORMALIZATIONS = str.maketrans({
     "\u2019": "'",   # right single quotation mark  →  straight apostrophe
     "\u2018": "'",   # left single quotation mark   →  straight apostrophe
@@ -180,266 +30,148 @@ def _normalize(text: str) -> str:
     return text.translate(_CHAR_NORMALIZATIONS)
 
 
-def _find_anchor(anchor_text, page_blocks):
-    """Find all starting indices where a short word sequence appears in page_blocks.
+def _merge_bboxes(bboxes):
+    """Merge multiple bounding boxes into one encompassing rectangle."""
+    if not bboxes:
+        return None
+    if len(bboxes) == 1:
+        return bboxes[0]
 
-    Comparison is done after Unicode punctuation normalisation so that curly
-    apostrophes, em-dashes, etc. don't cause spurious mismatches between GPT
-    output and Textract word tokens.
+    left = min(b["Left"] for b in bboxes)
+    top = min(b["Top"] for b in bboxes)
+    right = max(b["Left"] + b["Width"] for b in bboxes)
+    bottom = max(b["Top"] + b["Height"] for b in bboxes)
 
-    Pure-punctuation-only tokens are filtered from BOTH the anchor text AND
-    the collected document blocks so that separators like "--" or "." don't
-    cause false mismatches.
+    return {
+        "Left": left,
+        "Top": top,
+        "Width": right - left,
+        "Height": bottom - top
+    }
 
-    Returns list of (start_index, block_span, score) tuples sorted best-first.
-    block_span is the actual number of blocks consumed (including skipped
-    punctuation blocks), so callers can compute the correct end position.
+
+# ── Line-based coordinate resolution ─────────────────────────────────────────
+
+def _resolve_coords(value, line_nums, line_index):
+    """Look up word-level bboxes for a value on the given line numbers.
+
+    For single-line values that don't span the whole line, a sliding window
+    finds the matching word subsequence so only those words are highlighted
+    (sub-line precision). Multi-line values highlight all words on each line.
+
+    Returns a list of per-line merged bboxes, or None if lines are invalid.
     """
-    anchor_lower = _normalize(anchor_text).lower().strip()
-    # Filter punctuation-only tokens from anchor so the comparison string
-    # matches the document blocks (where punctuation may be separate blocks
-    # that are skipped during collection).
-    anchor_words = [
-        w for w in anchor_lower.split()
-        if w and not all(c in _PUNCT_SET for c in w)
-    ]
-    anchor_compare = " ".join(anchor_words)
-    anchor_word_count = len(anchor_words)
-    if anchor_word_count == 0:
-        return []
-    num_blocks = len(page_blocks)
-    hits = []
-
-    for i in range(num_blocks):
-        words_collected = []
-        j = i
-        while len(words_collected) < anchor_word_count and j < num_blocks:
-            raw = page_blocks[j].get("text", "")
-            norm = _normalize(raw).lower().strip()
-            if norm and not all(c in _PUNCT_SET for c in norm):
-                words_collected.append(norm)
-            j += 1
-
-        if len(words_collected) < anchor_word_count:
-            break  # not enough blocks left
-
-        combined = " ".join(words_collected)
-        block_span = j - i  # actual blocks consumed, including punct blocks
-
-        if anchor_compare == combined:
-            hits.append((i, block_span, 1.0))
-        elif anchor_compare in combined:
-            hits.append((i, block_span, len(anchor_compare) / len(combined)))
-        elif combined in anchor_compare and len(combined) > 3:
-            hits.append((i, block_span, len(combined) / len(anchor_compare) * 0.8))
-
-    hits.sort(key=lambda h: -h[2])
-    return hits
-
-
-def _strip_terminal_punct(text: str) -> str:
-    """Strip trailing and leading punctuation characters from a string.
-    Used to normalise the end-anchor so 'pool.' matches the Textract block 'pool'
-    when the period is a separate block in the Textract output."""
-    return text.strip(r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~""")
-
-
-def find_evidence_location(evidence_text, page_blocks, label_bbox=None):
-    """Find per-line bounding boxes for the given evidence text in WORD blocks.
-
-    Expects page_blocks to be pre-sorted in reading order.
-    - Short values (<=8 words): sequence matching with label proximity.
-    - Long values (>8 words): anchor on first/last few words and span between.
-
-    label_bbox: a list of bboxes (all positions where the field label appears
-                on this page) OR a single bbox dict for backward compat, OR None.
-                When multiple candidates exist, the match nearest to ANY label
-                position wins — critical for multi-song pages where the same
-                field name appears once per song section.
-
-    Returns a list of per-line merged bboxes so the viewer can render one
-    highlight rectangle per text line, avoiding the large empty rectangle that
-    a single encompassing bbox produces for multi-line text.
-    Returns None when the text cannot be located.
-    """
-    if not evidence_text or not page_blocks:
+    if not value or not line_nums or not line_index:
         return None
 
-    # Normalise label_bbox into a list (may be list, single dict, or None)
-    if isinstance(label_bbox, list):
-        label_bboxes = [lb for lb in label_bbox if lb]
-    elif isinstance(label_bbox, dict):
-        label_bboxes = [label_bbox]
-    else:
-        label_bboxes = []
+    value_norm = _normalize(value).lower().strip()
+    result = []
 
-    evidence_norm = _normalize(evidence_text).lower().strip()
-    evidence_words = evidence_norm.split()
-    evidence_len = len(evidence_norm)
-    num_blocks = len(page_blocks)
+    for ln in line_nums:
+        entry = line_index.get(ln)
+        if not entry:
+            continue
+        words = entry.get("words", [])
+        if not words:
+            continue
 
-    def _collect_lines(start, length):
-        bboxes = [page_blocks[start + j]["bbox"]
-                  for j in range(length) if page_blocks[start + j].get("bbox")]
-        return _group_bboxes_by_line(bboxes) or None
+        # For a single-line value shorter than the full line, find the
+        # matching word subsequence for sub-line precision.
+        if len(line_nums) == 1 and len(value_norm.split()) < len(words):
+            bboxes = _find_word_span(value_norm, words)
+        else:
+            bboxes = [w["bbox"] for w in words if w.get("bbox")]
 
-    # ── Long values: anchor approach ──
-    if len(evidence_words) > LONG_VALUE_THRESHOLD:
-        anchor_size = min(5, len(evidence_words) // 2)
-        start_text = " ".join(evidence_words[:anchor_size])
-        # Strip terminal punctuation from the last anchor word so "pool." matches
-        # Textract blocks where the period is returned as a separate token.
-        end_words = evidence_words[-anchor_size:]
-        end_words[-1] = _strip_terminal_punct(end_words[-1])
-        end_text = " ".join(end_words)
+        merged = _merge_bboxes(bboxes)
+        if merged:
+            result.append(merged)
 
-        start_hits = _find_anchor(start_text, page_blocks)
-        end_hits = _find_anchor(end_text, page_blocks)
+    return result if result else None
 
-        if start_hits and end_hits:
-            for start_idx, _, _ in start_hits:
-                for end_idx, end_span, _ in end_hits:
-                    end_pos = end_idx + end_span
-                    if end_idx >= start_idx and end_pos - start_idx <= len(evidence_words) * 2:
-                        result = _collect_lines(start_idx, min(end_pos, num_blocks) - start_idx)
-                        if result:
-                            return result
 
-        if start_hits:
-            start_idx = start_hits[0][0]
-            # Small buffer for punctuation-only blocks that inflate block count
-            span = min(len(evidence_words) + 5, num_blocks - start_idx)
-            result = _collect_lines(start_idx, span)
-            if result:
-                return result
+def _find_word_span(value_norm, words):
+    """Find the best matching contiguous word span within a line's words.
 
-        # Last resort: fall through to short-value matching below
+    Returns the bboxes of the matched words, or all word bboxes as fallback.
+    """
+    best_start, best_len, best_score = 0, len(words), 0
 
-    # ── Short values: sequence matching ──
-    max_words = len(evidence_words) + 3
-    matches = []  # (start_index, length, score)
-
-    for i in range(num_blocks):
+    for i in range(len(words)):
         combined = ""
+        for j in range(i, len(words)):
+            w = _normalize(words[j]["text"]).lower().strip()
+            combined = f"{combined} {w}".strip() if combined else w
 
-        for length in range(1, min(max_words + 1, num_blocks - i + 1)):
-            raw_word = page_blocks[i + length - 1].get("text", "")
-            norm_word = _normalize(raw_word).lower().strip()
-            combined = f"{combined} {norm_word}" if combined else norm_word
-            combined_lower = combined.strip()
+            if value_norm == combined:
+                # Exact match — return immediately
+                return [words[i + k]["bbox"] for k in range(j - i + 1)
+                        if words[i + k].get("bbox")]
 
-            score = 0
-            if evidence_norm == combined_lower:
-                score = 1.0
-            elif evidence_norm in combined_lower:
-                score = evidence_len / len(combined_lower)
-            elif combined_lower in evidence_norm and len(combined_lower) > 3:
-                score = len(combined_lower) / evidence_len * 0.7
+            if value_norm in combined:
+                score = len(value_norm) / len(combined)
+                if score > best_score:
+                    best_start, best_len, best_score = i, j - i + 1, score
 
-            if score > 0.3:
-                matches.append((i, length, score))
-
-            if score == 1.0:
-                break
-            if len(combined_lower) > evidence_len * 1.5 and score == 0:
+            # Stop expanding if we've overshot
+            if len(combined) > len(value_norm) * 1.5:
                 break
 
-    if not matches:
-        return None
+        if best_score == 1.0:
+            break
 
-    best_score = max(m[2] for m in matches)
-    top_matches = [m for m in matches if m[2] >= best_score * 0.95]
-    best_length = min(m[1] for m in top_matches)
-    top_matches = [m for m in top_matches if m[1] <= best_length + 2]
+    if best_score > 0.5:
+        return [words[best_start + k]["bbox"] for k in range(best_len)
+                if words[best_start + k].get("bbox")]
 
-    def _merged_bbox_for_proximity(start, length):
-        """Single merged bbox used only for label-proximity distance calc."""
-        bboxes = [page_blocks[start + j]["bbox"]
-                  for j in range(length) if page_blocks[start + j].get("bbox")]
-        return _merge_bboxes(bboxes)
+    # Fallback: highlight entire line
+    return [w["bbox"] for w in words if w.get("bbox")]
 
-    if len(top_matches) == 1 or not label_bboxes:
-        best = min(top_matches, key=lambda m: (-m[2], m[1]))
-        return _collect_lines(best[0], best[1])
 
-    # Pick the match closest to its NEAREST label occurrence.
-    # This correctly handles multi-song pages: Song 2's value will be
-    # nearest to Song 2's section heading, not Song 1's.
-    def _min_label_distance(match):
-        match_bbox = _merged_bbox_for_proximity(match[0], match[1]) or {}
-        return min(_bbox_distance(match_bbox, lb) for lb in label_bboxes)
+def _apply_coords(fields_dict, line_index, skip_keys=None):
+    """Resolve coordinates for all fields using their 'lines' arrays.
 
-    closest = min(top_matches, key=_min_label_distance)
-    return _collect_lines(closest[0], closest[1])
-
-# ── Coordinate application ────────────────────────────────────────────────────
-
-def _apply_coords_to_fields(fields_dict, page_blocks, skip_keys=None):
-    """Apply bounding box coordinates to a flat dict of {field_name: field_data}.
-
-    Handles two value shapes:
-    - Scalar: {"value": str, "page_number": int}  — standard fields
-    - Array:  [{"value": str, "page_number": int}, ...]  — ARRAY_FIELDS
-              Each entry gets its own coords so every occurrence is highlightable.
-
-    Skips non-string values (e.g. Lawyer Information's nested dict) and any
-    keys listed in skip_keys (e.g. "producers", "producer_name").
-
-    Groups work by page so the label-map scan runs once per page.
+    Also derives page_number from the line index so the frontend continues
+    to receive it without GPT having to return it.
     """
     skip_keys = skip_keys or set()
 
-    # Collect all (field_name, entry_dict) pairs grouped by page number.
-    # Array fields contribute one pair per entry; scalar fields contribute one.
-    fields_by_page = {}
     for field_name, field_data in fields_dict.items():
         if field_name in skip_keys:
             continue
 
         if field_name in ARRAY_FIELDS and isinstance(field_data, list):
-            # Array-valued field — each entry is matched independently
             for entry in field_data:
                 if not isinstance(entry, dict):
                     continue
-                value = entry.get("value")
-                if not value or value == "not found" or not isinstance(value, str):
-                    continue
-                page_num = entry.get("page_number")
-                if page_num is not None and isinstance(page_num, int):
-                    fields_by_page.setdefault(page_num, []).append((field_name, entry))
+                _resolve_single_field(entry, line_index)
             continue
 
-        # Scalar field — standard {value, page_number} dict
         if not isinstance(field_data, dict):
             continue
-        value = field_data.get("value")
-        if not value or value == "not found":
-            continue
-        if not isinstance(value, str):
-            # Non-string values (e.g. Lawyer Information's nested dict) cannot
-            # be located in word blocks — skip coords entirely for those fields.
-            continue
-        page_num = field_data.get("page_number")
-        if page_num is not None and isinstance(page_num, int):
-            fields_by_page.setdefault(page_num, []).append((field_name, field_data))
+        _resolve_single_field(field_data, line_index)
 
-    for page_num, fields in fields_by_page.items():
-        blocks_on_page = page_blocks.get(page_num, [])
-        # Sort into reading order: row (bucketed by 1% of page height) then left
-        sorted_blocks = sorted(blocks_on_page, key=lambda b: (
-            round(b.get("bbox", {}).get("Top", 0) * 100),
-            b.get("bbox", {}).get("Left", 0)
-        ))
-        # Single scan to find all label positions for this page
-        label_map = _build_label_bbox_map([name for name, _ in fields], sorted_blocks)
 
-        for field_name, field_data in fields:
-            line_bboxes = find_evidence_location(
-                field_data["value"], sorted_blocks, label_bbox=label_map.get(field_name)
-            )
-            # Store as a list of per-line bboxes (or None when not found).
-            # A single-line result is still a list of length 1.
-            field_data["coords"] = line_bboxes
+def _resolve_single_field(field_data, line_index):
+    """Resolve coords and derive page_number for one field entry."""
+    value = field_data.get("value")
+    line_nums = field_data.get("lines", [])
+
+    if not value or value == "not found" or not isinstance(value, str) or not line_nums:
+        field_data["coords"] = None
+        field_data["page_number"] = _page_from_lines(line_nums, line_index)
+        return
+
+    field_data["coords"] = _resolve_coords(value, line_nums, line_index)
+    field_data["page_number"] = _page_from_lines(line_nums, line_index)
+
+
+def _page_from_lines(line_nums, line_index):
+    """Derive page number from the first valid line number."""
+    for ln in (line_nums or []):
+        entry = line_index.get(ln)
+        if entry:
+            return entry["page"]
+    return None
 
 
 # ── GPT calls ─────────────────────────────────────────────────────────────────
@@ -456,18 +188,17 @@ def _strip_markdown_fences(content):
     return content
 
 
-def extract_field_information(page_text, page_blocks=None):
-    """Single-pass extraction: identify producers + songs and extract all fields.
+def extract_field_information(line_index):
+    """Single-pass extraction with line-number-based coordinate resolution.
 
     Args:
-        page_text:   dict of {page_num: [lines]} from Textract
-        page_blocks: dict of {page_num: [{text, bbox}]} WORD blocks for coords
+        line_index: dict of {line_num: {page, text, words}} from Textract
 
     Returns a dict with universal fields at the top level, a "producers" array
     with per-producer field extractions, and a "songs" array with per-song field
     extractions — each entry enriched with bounding box coords where found.
     """
-    prompt = build_extraction_prompt(page_text)
+    prompt = build_extraction_prompt(line_index)
     print("[DEBUG] Sending extraction prompt to OpenAI (single-pass)...")
 
     response = client.chat.completions.create(
@@ -489,18 +220,15 @@ def extract_field_information(page_text, page_blocks=None):
         print(f"[ERROR] Raw content: {content}")
         return {"error": f"Failed to parse extraction results: {e}"}
 
-    if page_blocks:
+    if line_index:
         try:
-            # Apply coords to universal top-level fields (skip nested arrays)
-            _apply_coords_to_fields(extracted_fields, page_blocks, skip_keys={"producers", "songs"})
+            _apply_coords(extracted_fields, line_index, skip_keys={"producers", "songs"})
 
-            # Apply coords to each producer's individual fields
             for producer in extracted_fields.get("producers", []):
-                _apply_coords_to_fields(producer, page_blocks, skip_keys={"producer_name"})
+                _apply_coords(producer, line_index, skip_keys={"producer_name"})
 
-            # Apply coords to each song's individual fields
             for song in extracted_fields.get("songs", []):
-                _apply_coords_to_fields(song, page_blocks, skip_keys={"song_title", "is_rate_explicit"})
+                _apply_coords(song, line_index, skip_keys={"song_title", "is_rate_explicit"})
 
         except Exception as e:
             print(f"[WARNING] Failed to add coordinates: {e}")

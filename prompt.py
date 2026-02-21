@@ -21,7 +21,7 @@ UNIVERSAL_FIELDS = [
 ]
 
 # Derived from field_descriptions.json — any field with "is_array": true
-# returns a list of {value, page_number} entries instead of a single object.
+# returns a list of {value, lines} entries instead of a single object.
 # To make a field array-typed, just add "is_array": true to its entry in the JSON.
 ARRAY_FIELDS = {
     name for name, data in field_descriptions_details.items()
@@ -76,12 +76,16 @@ def _format_field_list(field_names):
     return "\n".join(lines)
 
 
-def _format_contract_text(pages_text):
-    """Render the page text dict into a readable contract string."""
+def _format_contract_text(line_index):
+    """Render line_index into numbered lines with page separators."""
     parts = []
-    for page_num, text in pages_text.items():
-        page_content = "\n".join(text) if isinstance(text, list) else text
-        parts.append(f"\n--- Page {page_num} ---\n{page_content}")
+    current_page = None
+    for line_num in sorted(line_index.keys()):
+        entry = line_index[line_num]
+        if entry["page"] != current_page:
+            current_page = entry["page"]
+            parts.append(f"\n--- Page {current_page} ---")
+        parts.append(f"[L{line_num}] {entry['text']}")
     return "\n".join(parts)
 
 
@@ -91,9 +95,9 @@ def _build_producer_example(placeholder_name, indent="    "):
     lines = [f"{indent}{{", f'{indent}  "producer_name": "{placeholder_name}",']
     for field in producer_example_fields:
         if field in ARRAY_FIELDS:
-            lines.append(f'{indent}  "{field}": [{{"value": "...", "page_number": 1}}],')
+            lines.append(f'{indent}  "{field}": [{{"value": "...", "lines": [1]}}],')
         else:
-            lines.append(f'{indent}  "{field}": {{"value": "...", "page_number": 1}},')
+            lines.append(f'{indent}  "{field}": {{"value": "...", "lines": [1]}},')
     lines[-1] = lines[-1].rstrip(",")
     lines.append(f"{indent}}}")
     return "\n".join(lines)
@@ -105,16 +109,16 @@ def _build_song_example(placeholder_title, indent="    "):
     lines = [f"{indent}{{", f'{indent}  "song_title": "{placeholder_title}",']
     for field in song_example_fields:
         if field in ARRAY_FIELDS:
-            lines.append(f'{indent}  "{field}": [{{"value": "...", "page_number": 1}}],')
+            lines.append(f'{indent}  "{field}": [{{"value": "...", "lines": [1]}}],')
         else:
-            lines.append(f'{indent}  "{field}": {{"value": "...", "page_number": 1}},')
+            lines.append(f'{indent}  "{field}": {{"value": "...", "lines": [1]}},')
     # is_rate_explicit is always the last key — no trailing comma
     lines.append(f'{indent}  "is_rate_explicit": true')
     lines.append(f"{indent}}}")
     return "\n".join(lines)
 
 
-def build_extraction_prompt(pages_text):
+def build_extraction_prompt(line_index):
     """Single-pass prompt: identify producers + songs and extract all fields.
 
     Phases:
@@ -125,7 +129,7 @@ def build_extraction_prompt(pages_text):
       4   — Extract song-specific fields for each song
 
     Args:
-        pages_text: dict of {page_num: [lines]} from Textract
+        line_index: dict of {line_num: {page, text, words}} from Textract
     """
     universal_field_text = _format_field_list(
         [f for f in UNIVERSAL_FIELDS if f in field_descriptions_details]
@@ -138,7 +142,7 @@ def build_extraction_prompt(pages_text):
     song_field_names = ", ".join(
         f'"{f}"' for f in SONG_FIELDS if f in field_descriptions_details
     )
-    contract_text = _format_contract_text(pages_text)
+    contract_text = _format_contract_text(line_index)
     array_fields_list = ", ".join(f'"{f}"' for f in sorted(ARRAY_FIELDS)) or "none"
 
     producer_example_1 = _build_producer_example("<First Producer Name>")
@@ -194,7 +198,7 @@ Producer-specific rules:
 - Create one entry in the "producers" array for EACH producer identified in Phase 1
 - CRITICAL SCOPING: For each producer, extract field values from the section or paragraph that specifically pertains to that producer. Do NOT pull values from another producer's section.
 - If a term applies identically to all producers (e.g. a shared royalty clause), DUPLICATE the value into every producer's entry — never use a shared object
-- If a term exists for one producer but not another, return {{"value": "not found", "page_number": null}} for the absent producer
+- If a term exists for one producer but not another, return {{"value": "not found", "lines": []}} for the absent producer
 - Include ALL producer-specific fields for every producer, even when the value is "not found"
 
 PHASE 4 — SONG-SPECIFIC FIELDS (extract for EACH song)
@@ -210,16 +214,17 @@ Song-specific rules:
 - Set "is_rate_explicit": true if the field value is explicitly stated for this specific song (e.g. per-track schedule or table with individual rates)
 - Set "is_rate_explicit": false if the value comes from a blanket clause applying to all songs — still populate all fields with those blanket values
 - If a blanket value applies to all songs, DUPLICATE it into every song's entry — never use a shared object
-- If a field genuinely does not exist for a specific song (and no blanket value applies), return {{"value": "not found", "page_number": null}} — do NOT borrow values from other songs' sections
+- If a field genuinely does not exist for a specific song (and no blanket value applies), return {{"value": "not found", "lines": []}} — do NOT borrow values from other songs' sections
 - Include ALL song-specific fields for every song, even when the value is "not found"
 
 EXTRACTION RULES (apply to every field)
 ---------------------------------------
 1. Values must be VERBATIM from the document — never paraphrase, summarize, or interpret
-2. Found field:   {{"value": "exact text from document", "page_number": X}}
-3. Missing field: {{"value": "not found", "page_number": null}}
+2. Found field:   {{"value": "exact text from document", "lines": [L1, L2]}}
+   where L1, L2 are the [LN] line numbers from the contract text below
+3. Missing field: {{"value": "not found", "lines": []}}
 4. Array-type fields ({array_fields_list}):
-   - Return a JSON array of individual verbatim entries: [{{"value": "...", "page_number": X}}, ...]
+   - Return a JSON array of individual verbatim entries: [{{"value": "...", "lines": [L1]}}, ...]
    - One entry per distinct occurrence in the document
    - Return [] if none found
    - NEVER combine multiple values into a single string
@@ -227,20 +232,27 @@ EXTRACTION RULES (apply to every field)
 6. NEVER omit a field — every listed field must appear in the output
 7. Return valid JSON ONLY — no Markdown fences, no explanation, no preamble
 
+LINE NUMBERING
+--------------
+Each line of the contract text below is prefixed with [LN] where N is a global line number.
+When you extract a value, set "lines" to the line number(s) where that value appears.
+If a value spans multiple lines, include ALL relevant line numbers (e.g. "lines": [47, 48, 49]).
+Use the EXACT line numbers from the [LN] prefixes — do not guess or calculate.
+
 REQUIRED OUTPUT FORMAT
 ----------------------
 {{
-  "Document Name": {{"value": "...", "page_number": 1}},
-  "Execution Status": {{"value": "...", "page_number": 1}},
-  "Song Title": {{"value": "...", "page_number": 1}},
-  "Artist Name": {{"value": "...", "page_number": 1}},
-  "Single/Multisong Line": {{"value": "...", "page_number": 1}},
-  "Direct Counterparty": {{"value": "...", "page_number": 1}},
-  "Alternative Counterparties": {{"value": "...", "page_number": 1}},
-  "Effective Date": {{"value": "...", "page_number": 1}},
-  "Distributor": {{"value": "...", "page_number": 1}},
-  "Label": {{"value": "...", "page_number": 1}},
-  "Organization Counting Units": {{"value": "...", "page_number": 1}},
+  "Document Name": {{"value": "...", "lines": [1]}},
+  "Execution Status": {{"value": "...", "lines": [1]}},
+  "Song Title": {{"value": "...", "lines": [1]}},
+  "Artist Name": {{"value": "...", "lines": [1]}},
+  "Single/Multisong Line": {{"value": "...", "lines": [1]}},
+  "Direct Counterparty": {{"value": "...", "lines": [1]}},
+  "Alternative Counterparties": {{"value": "...", "lines": [1]}},
+  "Effective Date": {{"value": "...", "lines": [1]}},
+  "Distributor": {{"value": "...", "lines": [1]}},
+  "Label": {{"value": "...", "lines": [1]}},
+  "Organization Counting Units": {{"value": "...", "lines": [1]}},
   "producers": [
 {producer_example_1},
 {producer_example_2}
