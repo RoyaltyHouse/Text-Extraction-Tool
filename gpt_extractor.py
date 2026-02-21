@@ -79,20 +79,25 @@ def _group_bboxes_by_line(bboxes):
 
 
 def _build_label_bbox_map(field_names, page_blocks):
-    """Locate every field label's bounding box on the page.
+    """Locate ALL occurrences of every field label on the page.
 
-    Pass 1: multi-word sequence matching — checks consecutive WORD blocks
-            for multi-word field names (e.g. "Type of Royalty").  This is
-            much more precise than single-word matching for fields whose
-            individual words (like "Royalty") appear frequently.
-    Pass 2: single-word fallback — for any fields not matched in Pass 1.
+    Returns {field_name: [bbox, bbox, ...]} — a list of every position where
+    the label appears, so callers can disambiguate against the NEAREST one.
+    This is critical for multi-song pages where "Producer Royalty Points"
+    appears once per song section — storing only the first would anchor all
+    songs' coordinates to Song 1's section.
+
+    Pass 1: multi-word sequence matching (e.g. "Type of Royalty") — high quality.
+    Pass 2: single-word fallback for fields not found in Pass 1.
     """
     field_lowers = {name: name.lower().strip() for name in field_names}
-    best_scores = {}
-    label_bboxes = {}
+    label_bboxes = {}   # field_name -> [bbox, ...]
+    found_multi = set()  # fields matched in Pass 1
     num_blocks = len(page_blocks)
 
-    # Pass 1: multi-word label matching (higher quality)
+    _MIN_MULTI_SCORE = 0.85
+
+    # Pass 1: multi-word label matching — collect ALL occurrences
     for name, field_lower in field_lowers.items():
         field_words = field_lower.split()
         if len(field_words) < 2:
@@ -114,32 +119,35 @@ def _build_label_bbox_map(field_names, page_blocks):
             else:
                 continue
 
-            if score > best_scores.get(name, 0):
-                best_scores[name] = score
+            if score >= _MIN_MULTI_SCORE:
                 bboxes = [
                     page_blocks[i + j]["bbox"]
                     for j in range(window)
                     if page_blocks[i + j].get("bbox")
                 ]
-                label_bboxes[name] = _merge_bboxes(bboxes)
+                merged = _merge_bboxes(bboxes)
+                if merged:
+                    label_bboxes.setdefault(name, []).append(merged)
+                    found_multi.add(name)
 
-    # Pass 2: single-word matching (fallback for remaining fields)
+    # Pass 2: single-word fallback — only for fields NOT found in Pass 1
     for block in page_blocks:
         block_text = block.get("text", "").lower().strip()
         if not block_text or len(block_text) < 2:
             continue
 
         for name, field_lower in field_lowers.items():
-            if field_lower in block_text:
+            if name in found_multi:
+                continue
+            bbox = block.get("bbox")
+            if not bbox:
+                continue
+            if field_lower == block_text:
+                label_bboxes.setdefault(name, []).append(bbox)
+            elif field_lower in block_text:
                 score = len(field_lower) / len(block_text)
-                if score > best_scores.get(name, 0):
-                    best_scores[name] = score
-                    label_bboxes[name] = block.get("bbox")
-            elif block_text in field_lower and len(block_text) >= 4:
-                score = len(block_text) / len(field_lower) * 0.8
-                if score > best_scores.get(name, 0):
-                    best_scores[name] = score
-                    label_bboxes[name] = block.get("bbox")
+                if score >= 0.8:
+                    label_bboxes.setdefault(name, []).append(bbox)
 
     return label_bboxes
 
@@ -243,6 +251,12 @@ def find_evidence_location(evidence_text, page_blocks, label_bbox=None):
     - Short values (<=8 words): sequence matching with label proximity.
     - Long values (>8 words): anchor on first/last few words and span between.
 
+    label_bbox: a list of bboxes (all positions where the field label appears
+                on this page) OR a single bbox dict for backward compat, OR None.
+                When multiple candidates exist, the match nearest to ANY label
+                position wins — critical for multi-song pages where the same
+                field name appears once per song section.
+
     Returns a list of per-line merged bboxes so the viewer can render one
     highlight rectangle per text line, avoiding the large empty rectangle that
     a single encompassing bbox produces for multi-line text.
@@ -250,6 +264,14 @@ def find_evidence_location(evidence_text, page_blocks, label_bbox=None):
     """
     if not evidence_text or not page_blocks:
         return None
+
+    # Normalise label_bbox into a list (may be list, single dict, or None)
+    if isinstance(label_bbox, list):
+        label_bboxes = [lb for lb in label_bbox if lb]
+    elif isinstance(label_bbox, dict):
+        label_bboxes = [label_bbox]
+    else:
+        label_bboxes = []
 
     evidence_norm = _normalize(evidence_text).lower().strip()
     evidence_words = evidence_norm.split()
@@ -278,15 +300,15 @@ def find_evidence_location(evidence_text, page_blocks, label_bbox=None):
             for start_idx, _, _ in start_hits:
                 for end_idx, end_span, _ in end_hits:
                     end_pos = end_idx + end_span
-                    if end_idx >= start_idx and end_pos - start_idx <= len(evidence_words) * 3:
+                    if end_idx >= start_idx and end_pos - start_idx <= len(evidence_words) * 2:
                         result = _collect_lines(start_idx, min(end_pos, num_blocks) - start_idx)
                         if result:
                             return result
 
         if start_hits:
             start_idx = start_hits[0][0]
-            # Add buffer for punctuation-only blocks that inflate block count
-            span = min(len(evidence_words) + 10, num_blocks - start_idx)
+            # Small buffer for punctuation-only blocks that inflate block count
+            span = min(len(evidence_words) + 5, num_blocks - start_idx)
             result = _collect_lines(start_idx, span)
             if result:
                 return result
@@ -336,13 +358,18 @@ def find_evidence_location(evidence_text, page_blocks, label_bbox=None):
                   for j in range(length) if page_blocks[start + j].get("bbox")]
         return _merge_bboxes(bboxes)
 
-    if len(top_matches) == 1 or not label_bbox:
+    if len(top_matches) == 1 or not label_bboxes:
         best = min(top_matches, key=lambda m: (-m[2], m[1]))
         return _collect_lines(best[0], best[1])
 
-    closest = min(top_matches, key=lambda m: _bbox_distance(
-        _merged_bbox_for_proximity(m[0], m[1]) or {}, label_bbox
-    ))
+    # Pick the match closest to its NEAREST label occurrence.
+    # This correctly handles multi-song pages: Song 2's value will be
+    # nearest to Song 2's section heading, not Song 1's.
+    def _min_label_distance(match):
+        match_bbox = _merged_bbox_for_proximity(match[0], match[1]) or {}
+        return min(_bbox_distance(match_bbox, lb) for lb in label_bboxes)
+
+    closest = min(top_matches, key=_min_label_distance)
     return _collect_lines(closest[0], closest[1])
 
 # ── Coordinate application ────────────────────────────────────────────────────
