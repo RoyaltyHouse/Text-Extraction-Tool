@@ -1,3 +1,4 @@
+from collections import OrderedDict
 from dotenv import load_dotenv
 from prompt import build_extraction_prompt, ARRAY_FIELDS
 import os
@@ -55,9 +56,12 @@ def _merge_bboxes(bboxes):
 def _resolve_coords(value, line_nums, line_index):
     """Look up word-level bboxes for a value on the given line numbers.
 
-    For single-line values that don't span the whole line, a sliding window
-    finds the matching word subsequence so only those words are highlighted
-    (sub-line precision). Multi-line values highlight all words on each line.
+    Collects all words from the candidate lines into a flat list, then finds
+    the contiguous word span that best matches the value text. This handles:
+    - Sub-line precision (value is part of a line → only those words highlighted)
+    - Multi-line values (span crosses line boundaries → words from each line)
+    - Extra lines GPT included (e.g. a header above the value → those words
+      won't be part of the best match and get dropped)
 
     Returns a list of per-line merged bboxes, or None if lines are invalid.
     """
@@ -65,23 +69,33 @@ def _resolve_coords(value, line_nums, line_index):
         return None
 
     value_norm = _normalize(value).lower().strip()
-    result = []
 
+    # Collect all words from the candidate lines, tagging each with its line num
+    all_words = []  # [(word_dict, line_num), ...]
     for ln in line_nums:
         entry = line_index.get(ln)
         if not entry:
             continue
-        words = entry.get("words", [])
-        if not words:
-            continue
+        for w in entry.get("words", []):
+            if w.get("bbox"):
+                all_words.append((w, ln))
 
-        # For a single-line value shorter than the full line, find the
-        # matching word subsequence for sub-line precision.
-        if len(line_nums) == 1 and len(value_norm.split()) < len(words):
-            bboxes = _find_word_span(value_norm, words)
-        else:
-            bboxes = [w["bbox"] for w in words if w.get("bbox")]
+    if not all_words:
+        return None
 
+    # Find the best matching contiguous word span across all candidate words
+    matched = _find_word_span(value_norm, all_words)
+
+    if not matched:
+        return None
+
+    # Group matched bboxes by line number, merge each group into one rect
+    lines_bboxes = OrderedDict()
+    for bbox, ln in matched:
+        lines_bboxes.setdefault(ln, []).append(bbox)
+
+    result = []
+    for bboxes in lines_bboxes.values():
         merged = _merge_bboxes(bboxes)
         if merged:
             result.append(merged)
@@ -89,23 +103,27 @@ def _resolve_coords(value, line_nums, line_index):
     return result if result else None
 
 
-def _find_word_span(value_norm, words):
-    """Find the best matching contiguous word span within a line's words.
+def _find_word_span(value_norm, tagged_words):
+    """Find the best matching contiguous word span.
 
-    Returns the bboxes of the matched words, or all word bboxes as fallback.
+    tagged_words: list of (word_dict, line_num) tuples.
+
+    Returns list of (bbox, line_num) for the matched words, or all words
+    as fallback if no good match is found.
     """
-    best_start, best_len, best_score = 0, len(words), 0
+    n = len(tagged_words)
+    best_start, best_len, best_score = 0, n, 0
 
-    for i in range(len(words)):
+    for i in range(n):
         combined = ""
-        for j in range(i, len(words)):
-            w = _normalize(words[j]["text"]).lower().strip()
+        for j in range(i, n):
+            w = _normalize(tagged_words[j][0]["text"]).lower().strip()
             combined = f"{combined} {w}".strip() if combined else w
 
             if value_norm == combined:
                 # Exact match — return immediately
-                return [words[i + k]["bbox"] for k in range(j - i + 1)
-                        if words[i + k].get("bbox")]
+                return [(tagged_words[i + k][0]["bbox"], tagged_words[i + k][1])
+                        for k in range(j - i + 1)]
 
             if value_norm in combined:
                 score = len(value_norm) / len(combined)
@@ -120,11 +138,11 @@ def _find_word_span(value_norm, words):
             break
 
     if best_score > 0.5:
-        return [words[best_start + k]["bbox"] for k in range(best_len)
-                if words[best_start + k].get("bbox")]
+        return [(tagged_words[best_start + k][0]["bbox"], tagged_words[best_start + k][1])
+                for k in range(best_len)]
 
-    # Fallback: highlight entire line
-    return [w["bbox"] for w in words if w.get("bbox")]
+    # Fallback: return all words (GPT said these lines, trust it)
+    return [(w[0]["bbox"], w[1]) for w in tagged_words]
 
 
 def _apply_coords(fields_dict, line_index, skip_keys=None):
