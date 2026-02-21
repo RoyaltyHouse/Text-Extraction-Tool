@@ -1,7 +1,6 @@
 from dotenv import load_dotenv
 from prompt import build_extraction_prompt, ARRAY_FIELDS
 import os
-import re
 import json
 from openai import OpenAI
 
@@ -136,127 +135,80 @@ def _normalize(text: str) -> str:
     return text.translate(_CHAR_NORMALIZATIONS)
 
 
-# Matches any character that is not a word character or whitespace.
-# Pre-compiled for performance since it's called once per block per field.
-_PUNCT_RE = re.compile(r'[^\w\s]')
-
-
-def _clean_for_compare(text: str) -> str:
-    """Normalise Unicode and strip all punctuation for robust token comparison.
-
-    GPT output often attaches punctuation to adjacent words (e.g. "NAR;" or
-    "3.0%") while Textract emits them as separate tokens ("NAR", ";") or with
-    different tokenisation ("3", ".", "0", "%").  Removing all punctuation
-    before comparison collapses both representations to the same word sequence
-    so anchor matching and span calculations work regardless of how the source
-    PDF was tokenised.
-    """
-    normalized = _normalize(text)
-    cleaned = _PUNCT_RE.sub(' ', normalized)
-    return ' '.join(cleaned.lower().split())
-
-
 def _find_anchor(anchor_text, page_blocks):
-    """Find all starting block indices where a word sequence appears in page_blocks.
+    """Find all starting indices where a short word sequence appears in page_blocks.
 
-    All comparison is done after _clean_for_compare so that punctuation
-    differences between GPT output (e.g. "NAR;" or "3.0%") and Textract tokens
-    (["NAR", ";"] or ["3", "0"]) don't prevent matches.
+    Comparison is done after Unicode punctuation normalisation so that curly
+    apostrophes, em-dashes, etc. don't cause spurious mismatches between GPT
+    output and Textract word tokens.
 
-    Punctuation-only blocks (e.g. a lone ";" or ".") contribute zero clean words
-    and are automatically skipped when accumulating the comparison window.
+    Additionally, pure-punctuation-only blocks (e.g. a lone "." or "--") are
+    treated as optional separators: the window is extended by one extra block
+    for each such token encountered, keeping the word count alignment correct.
 
-    Returns a list of (start_index, score) tuples sorted best-first.
+    Returns list of (start_index, score) tuples sorted best-first.
     """
-    anchor_clean = _clean_for_compare(anchor_text)
-    anchor_words = anchor_clean.split()
+    anchor_lower = _normalize(anchor_text).lower().strip()
+    # Build expected word list, stripping standalone punctuation from anchor too
+    anchor_words = [w for w in anchor_lower.split() if w]
     anchor_word_count = len(anchor_words)
-    if not anchor_word_count:
-        return []
-
     num_blocks = len(page_blocks)
     hits = []
 
     for i in range(num_blocks):
+        # Collect up to anchor_word_count *content* words, skipping
+        # standalone-punctuation blocks (they inflate the token count without
+        # contributing meaningful text).
         words_collected = []
         j = i
-        # Accumulate clean words from consecutive blocks until we have enough.
-        # A single block may contribute 0 (pure-punct) or 2+ (hyphenated) words.
         while len(words_collected) < anchor_word_count and j < num_blocks:
             raw = page_blocks[j].get("text", "")
-            clean = _clean_for_compare(raw)
-            if clean:
-                words_collected.extend(clean.split())
+            norm = _normalize(raw).lower().strip()
+            if norm and not all(c in r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~""" for c in norm):
+                words_collected.append(norm)
             j += 1
 
         if len(words_collected) < anchor_word_count:
-            break  # not enough content left for any remaining position
+            break  # not enough blocks left
 
-        combined = " ".join(words_collected[:anchor_word_count])
+        combined = " ".join(words_collected)
 
-        if anchor_clean == combined:
+        if anchor_lower == combined:
             hits.append((i, 1.0))
-        elif anchor_clean in combined:
-            hits.append((i, len(anchor_clean) / len(combined)))
-        elif combined in anchor_clean and len(combined) > 3:
-            hits.append((i, len(combined) / len(anchor_clean) * 0.8))
+        elif anchor_lower in combined:
+            hits.append((i, len(anchor_lower) / len(combined)))
+        elif combined in anchor_lower and len(combined) > 3:
+            hits.append((i, len(combined) / len(anchor_lower) * 0.8))
 
     hits.sort(key=lambda h: -h[1])
     return hits
 
 
-def _blocks_for_clean_words(page_blocks, start_idx, num_clean_words):
-    """Count how many blocks from start_idx are needed to accumulate num_clean_words
-    clean words (after _clean_for_compare).
-
-    Punctuation-only blocks contribute 0 clean words but still advance the
-    block index.  A hyphenated token like "J-Kwest" contributes 2 clean words
-    from a single block.
-
-    Returns (block_count, words_accumulated):
-      - block_count: number of blocks consumed  (end_pos = start_idx + block_count)
-      - words_accumulated: actual clean words collected (may exceed num_clean_words
-        if the last block contributed multiple words)
-    """
-    words_so_far = 0
-    j = start_idx
-    num_blocks = len(page_blocks)
-    while words_so_far < num_clean_words and j < num_blocks:
-        raw = page_blocks[j].get("text", "")
-        clean = _clean_for_compare(raw)
-        words_so_far += len(clean.split()) if clean else 0
-        j += 1
-    return j - start_idx, words_so_far
+def _strip_terminal_punct(text: str) -> str:
+    """Strip trailing and leading punctuation characters from a string.
+    Used to normalise the end-anchor so 'pool.' matches the Textract block 'pool'
+    when the period is a separate block in the Textract output."""
+    return text.strip(r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~""")
 
 
 def find_evidence_location(evidence_text, page_blocks, label_bbox=None):
     """Find per-line bounding boxes for the given evidence text in WORD blocks.
 
     Expects page_blocks to be pre-sorted in reading order.
-    - Short values (<=8 clean words): sequence matching with label proximity.
-    - Long values (>8 clean words): anchor on first/last N clean words and span.
-
-    All text comparison uses _clean_for_compare which strips ALL punctuation so
-    that GPT tokens like "NAR;" match Textract's separate ["NAR", ";"] blocks,
-    and tokens like "3.0%" match ["3", "0"] without a period or percent sign.
-
-    Span calculations use _blocks_for_clean_words so that blocks containing
-    multi-word tokens (e.g. "J-Kwest" → 2 clean words) or zero-word tokens
-    (e.g. ";") are counted correctly rather than assuming 1 word = 1 block.
+    - Short values (<=8 words): sequence matching with label proximity.
+    - Long values (>8 words): anchor on first/last few words and span between.
 
     Returns a list of per-line merged bboxes so the viewer can render one
-    highlight rectangle per text line.  Returns None when not located.
+    highlight rectangle per text line, avoiding the large empty rectangle that
+    a single encompassing bbox produces for multi-line text.
+    Returns None when the text cannot be located.
     """
     if not evidence_text or not page_blocks:
         return None
 
-    evidence_clean = _clean_for_compare(evidence_text)
-    evidence_clean_words = evidence_clean.split()
-    num_clean_words = len(evidence_clean_words)
-    if not num_clean_words:
-        return None
-
-    evidence_len = len(evidence_clean)
+    evidence_norm = _normalize(evidence_text).lower().strip()
+    evidence_words = evidence_norm.split()
+    evidence_len = len(evidence_norm)
     num_blocks = len(page_blocks)
 
     def _collect_lines(start, length):
@@ -265,32 +217,30 @@ def find_evidence_location(evidence_text, page_blocks, label_bbox=None):
         return _group_bboxes_by_line(bboxes) or None
 
     # ── Long values: anchor approach ──
-    if num_clean_words > LONG_VALUE_THRESHOLD:
-        anchor_size = min(5, num_clean_words // 2)
-        start_text = " ".join(evidence_clean_words[:anchor_size])
-        end_text   = " ".join(evidence_clean_words[-anchor_size:])
+    if len(evidence_words) > LONG_VALUE_THRESHOLD:
+        anchor_size = min(5, len(evidence_words) // 2)
+        start_text = " ".join(evidence_words[:anchor_size])
+        # Strip terminal punctuation from the last anchor word so "pool." matches
+        # Textract blocks where the period is returned as a separate token.
+        end_words = evidence_words[-anchor_size:]
+        end_words[-1] = _strip_terminal_punct(end_words[-1])
+        end_text = " ".join(end_words)
 
         start_hits = _find_anchor(start_text, page_blocks)
-        end_hits   = _find_anchor(end_text,   page_blocks)
+        end_hits = _find_anchor(end_text, page_blocks)
 
         if start_hits and end_hits:
             for start_idx, _ in start_hits:
                 for end_idx, _ in end_hits:
-                    # Count blocks for the end-anchor span so multi-word tokens
-                    # (e.g. "J-Kwest") and punct-only tokens (";") are handled.
-                    end_block_count, _ = _blocks_for_clean_words(page_blocks, end_idx, anchor_size)
-                    end_pos = end_idx + end_block_count
-                    span = end_pos - start_idx
-                    if end_idx >= start_idx and span <= num_clean_words * 3:
+                    end_pos = end_idx + anchor_size
+                    if end_idx >= start_idx and end_pos - start_idx <= len(evidence_words) * 2:
                         result = _collect_lines(start_idx, min(end_pos, num_blocks) - start_idx)
                         if result:
                             return result
 
         if start_hits:
             start_idx = start_hits[0][0]
-            # Count blocks forward until we've covered all evidence clean words.
-            span_block_count, _ = _blocks_for_clean_words(page_blocks, start_idx, num_clean_words)
-            span = min(span_block_count, num_blocks - start_idx)
+            span = min(len(evidence_words), num_blocks - start_idx)
             result = _collect_lines(start_idx, span)
             if result:
                 return result
@@ -298,7 +248,7 @@ def find_evidence_location(evidence_text, page_blocks, label_bbox=None):
         # Last resort: fall through to short-value matching below
 
     # ── Short values: sequence matching ──
-    max_words = num_clean_words + 3
+    max_words = len(evidence_words) + 3
     matches = []  # (start_index, length, score)
 
     for i in range(num_blocks):
@@ -306,17 +256,16 @@ def find_evidence_location(evidence_text, page_blocks, label_bbox=None):
 
         for length in range(1, min(max_words + 1, num_blocks - i + 1)):
             raw_word = page_blocks[i + length - 1].get("text", "")
-            clean_word = _clean_for_compare(raw_word)
-            if clean_word:
-                combined = f"{combined} {clean_word}" if combined else clean_word
+            norm_word = _normalize(raw_word).lower().strip()
+            combined = f"{combined} {norm_word}" if combined else norm_word
             combined_lower = combined.strip()
 
             score = 0
-            if evidence_clean == combined_lower:
+            if evidence_norm == combined_lower:
                 score = 1.0
-            elif evidence_clean in combined_lower:
-                score = evidence_len / len(combined_lower) if combined_lower else 0
-            elif combined_lower in evidence_clean and len(combined_lower) > 3:
+            elif evidence_norm in combined_lower:
+                score = evidence_len / len(combined_lower)
+            elif combined_lower in evidence_norm and len(combined_lower) > 3:
                 score = len(combined_lower) / evidence_len * 0.7
 
             if score > 0.3:
