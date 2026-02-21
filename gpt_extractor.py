@@ -79,28 +79,62 @@ def _group_bboxes_by_line(bboxes):
 
 
 def _build_label_bbox_map(field_names, page_blocks):
-    """Single scan over page_blocks to locate every field label's bounding box.
+    """Locate every field label's bounding box on the page.
 
-    Works with WORD blocks by checking if any significant word from the field
-    name appears in the document.
+    Pass 1: multi-word sequence matching — checks consecutive WORD blocks
+            for multi-word field names (e.g. "Type of Royalty").  This is
+            much more precise than single-word matching for fields whose
+            individual words (like "Royalty") appear frequently.
+    Pass 2: single-word fallback — for any fields not matched in Pass 1.
     """
     field_lowers = {name: name.lower().strip() for name in field_names}
     best_scores = {}
     label_bboxes = {}
+    num_blocks = len(page_blocks)
 
+    # Pass 1: multi-word label matching (higher quality)
+    for name, field_lower in field_lowers.items():
+        field_words = field_lower.split()
+        if len(field_words) < 2:
+            continue
+        window = len(field_words)
+        for i in range(num_blocks - window + 1):
+            block_words = [
+                _normalize(page_blocks[i + j].get("text", "")).lower().strip()
+                for j in range(window)
+            ]
+            combined = " ".join(block_words)
+
+            if field_lower == combined:
+                score = 1.0
+            elif field_lower in combined:
+                score = len(field_lower) / len(combined) * 0.95
+            elif combined in field_lower and len(combined) > 5:
+                score = len(combined) / len(field_lower) * 0.9
+            else:
+                continue
+
+            if score > best_scores.get(name, 0):
+                best_scores[name] = score
+                bboxes = [
+                    page_blocks[i + j]["bbox"]
+                    for j in range(window)
+                    if page_blocks[i + j].get("bbox")
+                ]
+                label_bboxes[name] = _merge_bboxes(bboxes)
+
+    # Pass 2: single-word matching (fallback for remaining fields)
     for block in page_blocks:
         block_text = block.get("text", "").lower().strip()
         if not block_text or len(block_text) < 2:
             continue
 
         for name, field_lower in field_lowers.items():
-            # Check for full field name in word
             if field_lower in block_text:
                 score = len(field_lower) / len(block_text)
                 if score > best_scores.get(name, 0):
                     best_scores[name] = score
                     label_bboxes[name] = block.get("bbox")
-            # Check if word is significant part of field name (e.g., "Artist" in "Artist Name")
             elif block_text in field_lower and len(block_text) >= 4:
                 score = len(block_text) / len(field_lower) * 0.8
                 if score > best_scores.get(name, 0):
@@ -111,6 +145,9 @@ def _build_label_bbox_map(field_names, page_blocks):
 
 
 LONG_VALUE_THRESHOLD = 8  # words — above this, use anchor matching
+
+# Characters considered pure punctuation when filtering anchor/block tokens.
+_PUNCT_SET = set(r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~""")
 
 # Characters that Textract and GPT represent differently.
 # Keys are unicode variants; values are the canonical ASCII replacement.
@@ -142,29 +179,36 @@ def _find_anchor(anchor_text, page_blocks):
     apostrophes, em-dashes, etc. don't cause spurious mismatches between GPT
     output and Textract word tokens.
 
-    Additionally, pure-punctuation-only blocks (e.g. a lone "." or "--") are
-    treated as optional separators: the window is extended by one extra block
-    for each such token encountered, keeping the word count alignment correct.
+    Pure-punctuation-only tokens are filtered from BOTH the anchor text AND
+    the collected document blocks so that separators like "--" or "." don't
+    cause false mismatches.
 
-    Returns list of (start_index, score) tuples sorted best-first.
+    Returns list of (start_index, block_span, score) tuples sorted best-first.
+    block_span is the actual number of blocks consumed (including skipped
+    punctuation blocks), so callers can compute the correct end position.
     """
     anchor_lower = _normalize(anchor_text).lower().strip()
-    # Build expected word list, stripping standalone punctuation from anchor too
-    anchor_words = [w for w in anchor_lower.split() if w]
+    # Filter punctuation-only tokens from anchor so the comparison string
+    # matches the document blocks (where punctuation may be separate blocks
+    # that are skipped during collection).
+    anchor_words = [
+        w for w in anchor_lower.split()
+        if w and not all(c in _PUNCT_SET for c in w)
+    ]
+    anchor_compare = " ".join(anchor_words)
     anchor_word_count = len(anchor_words)
+    if anchor_word_count == 0:
+        return []
     num_blocks = len(page_blocks)
     hits = []
 
     for i in range(num_blocks):
-        # Collect up to anchor_word_count *content* words, skipping
-        # standalone-punctuation blocks (they inflate the token count without
-        # contributing meaningful text).
         words_collected = []
         j = i
         while len(words_collected) < anchor_word_count and j < num_blocks:
             raw = page_blocks[j].get("text", "")
             norm = _normalize(raw).lower().strip()
-            if norm and not all(c in r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~""" for c in norm):
+            if norm and not all(c in _PUNCT_SET for c in norm):
                 words_collected.append(norm)
             j += 1
 
@@ -172,15 +216,16 @@ def _find_anchor(anchor_text, page_blocks):
             break  # not enough blocks left
 
         combined = " ".join(words_collected)
+        block_span = j - i  # actual blocks consumed, including punct blocks
 
-        if anchor_lower == combined:
-            hits.append((i, 1.0))
-        elif anchor_lower in combined:
-            hits.append((i, len(anchor_lower) / len(combined)))
-        elif combined in anchor_lower and len(combined) > 3:
-            hits.append((i, len(combined) / len(anchor_lower) * 0.8))
+        if anchor_compare == combined:
+            hits.append((i, block_span, 1.0))
+        elif anchor_compare in combined:
+            hits.append((i, block_span, len(anchor_compare) / len(combined)))
+        elif combined in anchor_compare and len(combined) > 3:
+            hits.append((i, block_span, len(combined) / len(anchor_compare) * 0.8))
 
-    hits.sort(key=lambda h: -h[1])
+    hits.sort(key=lambda h: -h[2])
     return hits
 
 
@@ -230,17 +275,18 @@ def find_evidence_location(evidence_text, page_blocks, label_bbox=None):
         end_hits = _find_anchor(end_text, page_blocks)
 
         if start_hits and end_hits:
-            for start_idx, _ in start_hits:
-                for end_idx, _ in end_hits:
-                    end_pos = end_idx + anchor_size
-                    if end_idx >= start_idx and end_pos - start_idx <= len(evidence_words) * 2:
+            for start_idx, _, _ in start_hits:
+                for end_idx, end_span, _ in end_hits:
+                    end_pos = end_idx + end_span
+                    if end_idx >= start_idx and end_pos - start_idx <= len(evidence_words) * 3:
                         result = _collect_lines(start_idx, min(end_pos, num_blocks) - start_idx)
                         if result:
                             return result
 
         if start_hits:
             start_idx = start_hits[0][0]
-            span = min(len(evidence_words), num_blocks - start_idx)
+            # Add buffer for punctuation-only blocks that inflate block count
+            span = min(len(evidence_words) + 10, num_blocks - start_idx)
             result = _collect_lines(start_idx, span)
             if result:
                 return result

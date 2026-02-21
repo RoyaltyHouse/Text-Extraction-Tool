@@ -192,6 +192,7 @@ PHASE 3 — PRODUCER-SPECIFIC FIELDS (extract for EACH producer)
 
 Producer-specific rules:
 - Create one entry in the "producers" array for EACH producer identified in Phase 1
+- CRITICAL SCOPING: For each producer, extract field values from the section or paragraph that specifically pertains to that producer. Do NOT pull values from another producer's section.
 - If a term applies identically to all producers (e.g. a shared royalty clause), DUPLICATE the value into every producer's entry — never use a shared object
 - If a term exists for one producer but not another, return {{"value": "not found", "page_number": null}} for the absent producer
 - Include ALL producer-specific fields for every producer, even when the value is "not found"
@@ -203,9 +204,13 @@ Extract the following fields for each song, using the same definitions as Phase 
 
 Song-specific rules:
 - Create one entry in the "songs" array for EACH song identified in Phase 1.5
+- CRITICAL SCOPING: For each song, extract field values ONLY from the section or paragraph that specifically discusses that song (e.g. a per-track schedule, numbered subsection like "4.1 STREETS KRAZY", or a table row for that song). Do NOT pull values from another song's section or from a different field's subsection.
+- When extracting "Producer Royalty Points" for a song, use the Producer Royalty Points subsection for that song — NOT the Bumps subsection. Include the per-producer allocation/breakdown when it is stated alongside the aggregate rate (e.g. "3.5% of NAR. Allocated: Producer A 2.0% NAR; Producer B 1.5% NAR").
+- When extracting "Type of Royalty" for a song, use the Type of Royalty subsection for that song — do NOT copy the value from the Producer Royalty Points or Bumps subsection.
 - Set "is_rate_explicit": true if the field value is explicitly stated for this specific song (e.g. per-track schedule or table with individual rates)
 - Set "is_rate_explicit": false if the value comes from a blanket clause applying to all songs — still populate all fields with those blanket values
 - If a blanket value applies to all songs, DUPLICATE it into every song's entry — never use a shared object
+- If a field genuinely does not exist for a specific song (and no blanket value applies), return {{"value": "not found", "page_number": null}} — do NOT borrow values from other songs' sections
 - Include ALL song-specific fields for every song, even when the value is "not found"
 
 EXTRACTION RULES (apply to every field)

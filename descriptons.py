@@ -322,26 +322,28 @@ Return only the **name of the parent company**:
 
 
 lawyer_information_description = """
-Extract the **Lawyer Information** from the agreement. These will typically be listed using the label **“C/O”** (care of), and there are usually **two parties** listed.
+Extract the **Lawyer Information** from the agreement. There are usually **two parties** listed: the Client Party’s lawyer and the Counterparty’s lawyer.
 
 What to look for:
-- Lines or blocks containing:
-  - “C/O [Law Firm or Lawyer Name]”
-  - Address blocks or contact details beginning with “C/O”
+- Lines or blocks containing any of these patterns:
+  - “C/O [Law Firm or Lawyer Name]” (care of)
+  - “represented by [Lawyer Name], [Firm Name]” or “represented by [Firm Name]”
+  - Explicit labels like “(Client Lawyer)” or “(Counterparty Lawyer)”
+  - “Label’s counsel is [Lawyer Name]”
+  - “Producer is represented by [Lawyer Name]”
+  - Address blocks or contact details associated with legal representatives
 - Usually, both the **Client Party’s lawyer** and the **Counterparty’s lawyer** are listed.
 
 Identification Strategy:
-1. Pull both “C/O” entries and their associated names.
-2. Whichever lawyer block is **closer to the Artist Name** should be tagged as:
-   - `"client_lawyer": "<lawyer info>"`
-3. The other should be:
-   - `"counterparty_lawyer": "<lawyer info>"`
+1. Look for “C/O” entries, “represented by” clauses, or explicit “(Client Lawyer)” / “(Counterparty Lawyer)” labels.
+2. If explicitly labeled (e.g. “Client Lawyer”, “Counterparty Lawyer”, “Label’s counsel”), use those labels directly.
+3. If not explicitly labeled, whichever lawyer block is **closer to the Client Party / Producer name** should be tagged as client_lawyer; the other as counterparty_lawyer.
 
 Expected Output:
 ```json
 {
-  "client_lawyer": "C/O XYZ Law Group, 123 Main St, New York, NY",
-  "counterparty_lawyer": "C/O ABC Legal LLP, 456 Sunset Blvd, Los Angeles, CA"
+  “client_lawyer”: “Derek Prince, Esq., Prince & Sullivan Entertainment Law, 3900 W. Alameda Ave., Burbank, CA 91505”,
+  “counterparty_lawyer”: “Sandra Monroe, Esq., Monroe Shapiro LLP, 2000 Avenue of the Stars, Los Angeles, CA 90067”
 }
 """
 
