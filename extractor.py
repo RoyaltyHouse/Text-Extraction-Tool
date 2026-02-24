@@ -3,7 +3,6 @@ from pypdf import PdfReader
 from gpt_extractor import extract_field_information
 import json , os, tempfile, time
 import boto3
-from flask import jsonify
 import time
 
 
@@ -64,7 +63,7 @@ def textract_lines_by_page_from_file(file, bucket=S3_BUCKET):
     start_time = time.time()
     while True:
         if time.time() - start_time > 115:
-            return jsonify({"error": "Text extraction failed due to poor image quality, formatting, or an unreadable document."}), 200
+            return {"error": "Text extraction failed due to poor image quality, formatting, or an unreadable document."}, 200
 
         resp = textract.get_document_text_detection(JobId=job_id, MaxResults=1000)
         status = resp["JobStatus"]
@@ -125,7 +124,7 @@ def textract_lines_by_page_from_file(file, bucket=S3_BUCKET):
             global_line_num += 1
 
     if not line_index:
-        return jsonify({"error": "No extractable text found in the document."}), 400
+        return {"error": "No extractable text found in the document."}, 400
 
     sample = [line_index[i]["text"] for i in sorted(line_index)[:5]]
     print("[DEBUG] Sample extracted lines:", sample)

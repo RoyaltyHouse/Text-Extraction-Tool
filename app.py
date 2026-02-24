@@ -61,8 +61,10 @@ def uploads():
         if filename.endswith('.pdf'):
             print(f"[DEBUG] Received PDF file: {file.filename}")
             extraction_result = textract_lines_by_page_from_file(file, bucket=S3_BUCKET)
-            if isinstance(extraction_result, tuple) or not isinstance(extraction_result, dict):
-                return extraction_result
+            if isinstance(extraction_result, tuple):
+                return jsonify(extraction_result[0]), extraction_result[1]
+            if not isinstance(extraction_result, dict):
+                return jsonify({"error": "Unexpected extraction result"}), 500
 
             # Check if it's an error response
             if "error" in extraction_result:
@@ -236,10 +238,10 @@ def _run_extraction(job_id, s3_key, url=None, artist_id=None, original_document_
         extraction_result = textract_lines_by_page_from_file(downloaded, bucket=S3_BUCKET)
 
         if isinstance(extraction_result, tuple):
-            # Flask (response, status_code) tuple returned from extractor error path
-            response_obj = extraction_result[0]
-            body = response_obj.get_json() if hasattr(response_obj, 'get_json') else {}
-            raise RuntimeError(body.get("error", "Textract returned an error response"))
+            # (dict, status_code) tuple returned from extractor error path
+            body = extraction_result[0]
+            error_msg = body.get("error", "Textract returned an error response") if isinstance(body, dict) else str(body)
+            raise RuntimeError(error_msg)
 
         if "error" in extraction_result:
             raise RuntimeError(extraction_result["error"])
