@@ -7,7 +7,7 @@ from openai import OpenAI
 
 load_dotenv()
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY2"))
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY2"), timeout=60.0)
 
 # Characters that Textract and GPT represent differently.
 _CHAR_NORMALIZATIONS = str.maketrans({
