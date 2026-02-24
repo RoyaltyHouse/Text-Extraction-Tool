@@ -5,62 +5,73 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+env:
+  FUNCTION_NAME: extract-tool-api
+  FUNCTION_ARN: arn:aws:lambda:us-east-2:713944518341:function:extract-tool-api
+  AWS_ACCOUNT_ID: "713944518341"
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: "us-east-2"
+
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
-      - name: Install zip tool
-        uses: montudor/action-zip@v1
+      - name: Create zip (exclude non-runtime files)
+        run: zip -r code.zip . -x ".git/*" ".github/*" ".gitignore" "*.md" ".env" ".idea/*" ".vscode/*" "__pycache__/*" "*.pyc"
 
-      - name: Create Zip file for Lambda function
-        run: zip -r code.zip .
+      - name: Deploy code to Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name ${{ env.FUNCTION_NAME }} \
+            --zip-file fileb://code.zip
 
-      - name: Deploy Lambda code
-        uses: imehedi/actions-awscli-v2@latest
-        with:
-          args: "lambda update-function-code \
-            --function-name arn:aws:lambda:us-east-2:713944518341:function:extract-tool-api \
-            --zip-file fileb://code.zip"
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: "us-east-2"
+      - name: Wait for function update to complete
+        run: |
+          aws lambda wait function-updated \
+            --function-name ${{ env.FUNCTION_NAME }}
 
-      - name: Set Lambda timeout to 5 minutes
-        uses: imehedi/actions-awscli-v2@latest
-        with:
-          args: "lambda update-function-configuration \
-            --function-name arn:aws:lambda:us-east-2:713944518341:function:extract-tool-api \
-            --timeout 300"
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: "us-east-2"
+      - name: Set Lambda timeout and environment variables
+        run: |
+          # Get existing env vars so we don't clobber them
+          EXISTING_ENV=$(aws lambda get-function-configuration \
+            --function-name ${{ env.FUNCTION_NAME }} \
+            --query 'Environment.Variables' \
+            --output json 2>/dev/null || echo '{}')
 
-      - name: Remove existing self-invocation permission (idempotent)
-        uses: imehedi/actions-awscli-v2@latest
-        with:
-          args: "lambda remove-permission \
-            --function-name arn:aws:lambda:us-east-2:713944518341:function:extract-tool-api \
-            --statement-id AllowSelfInvoke"
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: "us-east-2"
-        continue-on-error: true
+          # Merge LAMBDA_FUNCTION_ARN into existing env vars
+          MERGED_ENV=$(echo "$EXISTING_ENV" | python3 -c "
+          import sys, json
+          env = json.load(sys.stdin)
+          env['LAMBDA_FUNCTION_ARN'] = '${{ env.FUNCTION_ARN }}'
+          print(json.dumps({'Variables': env}))
+          ")
 
-      - name: Add self-invocation permission
-        uses: imehedi/actions-awscli-v2@latest
-        with:
-          args: "lambda add-permission \
-            --function-name arn:aws:lambda:us-east-2:713944518341:function:extract-tool-api \
+          aws lambda update-function-configuration \
+            --function-name ${{ env.FUNCTION_NAME }} \
+            --timeout 300 \
+            --environment "$MERGED_ENV"
+
+      - name: Wait for configuration update to complete
+        run: |
+          aws lambda wait function-updated \
+            --function-name ${{ env.FUNCTION_NAME }}
+
+      - name: Allow Lambda to invoke itself (self-invocation policy)
+        run: |
+          # Remove existing policy if present (idempotent), then re-add
+          aws lambda remove-permission \
+            --function-name ${{ env.FUNCTION_NAME }} \
+            --statement-id AllowSelfInvoke 2>/dev/null || true
+
+          aws lambda add-permission \
+            --function-name ${{ env.FUNCTION_NAME }} \
             --statement-id AllowSelfInvoke \
             --action lambda:InvokeFunction \
-            --principal arn:aws:iam::713944518341:root"
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: "us-east-2"
+            --principal lambda.amazonaws.com \
+            --source-arn ${{ env.FUNCTION_ARN }}
