@@ -112,8 +112,9 @@ def _build_song_example(placeholder_title, indent="    "):
             lines.append(f'{indent}  "{field}": [{{"value": "...", "lines": [1]}}],')
         else:
             lines.append(f'{indent}  "{field}": {{"value": "...", "lines": [1]}},')
-    # is_rate_explicit is always the last key — no trailing comma
-    lines.append(f'{indent}  "is_rate_explicit": true')
+    # Synthetic flags — always last, no trailing comma on final entry
+    lines.append(f'{indent}  "is_rate_explicit": true,')
+    lines.append(f'{indent}  "advance_scope": "agreement|song"')
     lines.append(f"{indent}}}")
     return "\n".join(lines)
 
@@ -206,6 +207,7 @@ Fields: {song_field_names}
 - For "Producer Royalty Points": use the royalty subsection, NOT the Bumps subsection. Include per-producer breakdown if stated alongside the aggregate rate.
 - For "Type of Royalty": use the type of royalty subsection, NOT the royalty points or bumps subsection.
 - "is_rate_explicit": true if explicitly stated for this song; false if from a blanket clause
+- "advance_scope": set to "agreement" if ONE advance covers all songs (no per-track breakdown); set to "song" if each track has its own distinct advance amount stated explicitly. Always duplicate the advance value into every song entry regardless.
 - Blanket values: DUPLICATE into every song entry
 - Missing: {{"value": "not found", "lines": []}}
 

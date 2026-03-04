@@ -257,7 +257,7 @@ def extract_field_information(line_index):
                 _apply_coords(producer, line_index, skip_keys={"producer_name"})
 
             for song in extracted_fields.get("songs", []):
-                _apply_coords(song, line_index, skip_keys={"song_title", "is_rate_explicit"})
+                _apply_coords(song, line_index, skip_keys={"song_title", "is_rate_explicit", "advance_scope"})
         except Exception as e:
             print(f"[WARNING] Coordinate resolution failed: {e}")
 

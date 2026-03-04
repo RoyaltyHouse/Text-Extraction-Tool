@@ -53,7 +53,7 @@
         "description": "Check if the contract uses **USNRC** (U.S. Normal Retail Channels) for measuring sales.\n\nLook for: \"USNRC Net Sales\", \"Net Sales (USNRC)\", \"sales through U.S. Normal Retail Channels\".\n\nReturn \"USNRC\" or \"not found\"."
     },
     "Producer Advance Legal Recoupment": {
-        "description": "Extract the **Producer Advance amount** — the dollar value only.\n\nLook near: \"Producer Advance\", \"Advance payable to Producer\", \"Advance of $X\".\n\nReturn ONLY the monetary value (e.g. \"$10,000\").\nSet \"lines\" to the line where the dollar amount appears, not the header line."
+        "description": "Extract the **Producer Advance amount** — the dollar value only.\n\nLook near: \"Producer Advance\", \"Advance payable to Producer\", \"Advance of $X\".\n\nReturn ONLY the monetary value (e.g. \"$10,000\").\nSet \"lines\" to the line where the dollar amount appears, not the header line.\n\nScope signal (for `advance_scope` in song entries): if one advance amount is stated globally with no per-song breakdown → agreement-level. If distinct amounts are stated per track in a schedule or table → song-level."
     },
     "Recoupment Classification": {
         "description": "Extract the **Recoupment Classification** — how the advance is recouped.\n\nValid values: \"Non-Returnable Recoupable\", \"Partially-Recoupable\", \"Fully-Recoupable\".\n\nFound adjacent to the advance amount. Return ONLY one of the three values above, or \"not found\"."
