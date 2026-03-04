@@ -54,8 +54,10 @@ def uploads():
         if filename.endswith('.pdf'):
             print(f"[DEBUG] Received PDF file: {file.filename}")
             extraction_result = textract_lines_by_page_from_file(file, bucket=S3_BUCKET)
-            if isinstance(extraction_result, tuple) or not isinstance(extraction_result, dict):
-                return extraction_result
+            if isinstance(extraction_result, tuple):
+                return jsonify(extraction_result[0]), extraction_result[1]
+            if not isinstance(extraction_result, dict):
+                return jsonify({"error": "Unexpected extraction result"}), 500
 
             # Check if it's an error response
             if "error" in extraction_result:
@@ -170,7 +172,88 @@ def presigned_upload_url():
     return jsonify({"upload_url": upload_url, "s3_key": s3_key}), 200
 
 
-# Extract text from file URL endpoint
+def _run_extraction(job_id, s3_key, url=None, artist_id=None, original_document_id=None):
+    """
+    Core extraction pipeline. Runs outside of a Flask request context — called
+    from the background Lambda invocation dispatched by extract_from_url.
+    Writes final state (done/failed) to S3 via job_store.
+    """
+    try:
+        job_store.set_processing(job_id)
+
+        # Resolve the file URL
+        if s3_key:
+            file_url = s3.generate_presigned_url(
+                'get_object',
+                Params={'Bucket': S3_BUCKET, 'Key': s3_key},
+                ExpiresIn=900,  # 15 min — enough for the full pipeline
+            )
+        elif url:
+            file_url = _normalize_to_direct_download(url)
+        else:
+            raise ValueError("Either s3_key or url must be provided")
+
+        # Download the file
+        resp = requests.get(file_url, stream=True, timeout=30)
+        resp.raise_for_status()
+        content = resp.content
+
+        # Determine filename
+        cd = resp.headers.get('Content-Disposition', '')
+        filename = None
+        if 'filename=' in cd:
+            filename = cd.split('filename=')[-1].strip('"; ')
+        if not filename:
+            parsed = urllib.parse.urlparse(file_url)
+            path_name = os.path.basename(parsed.path)
+            filename = path_name or "document.pdf"
+        if '.' not in filename:
+            filename = f"{filename}.pdf"
+
+        ext = filename.rsplit('.', 1)[-1].lower()
+        if ext not in ALLOWED_EXTS:
+            raise ValueError(f"Unsupported file type '.{ext}'. Allowed: {', '.join(ALLOWED_EXTS)}")
+
+        class _DownloadedFileAdapter:
+            def __init__(self, name, data_bytes):
+                self.filename = name
+                self._data = data_bytes
+
+            def save(self, dst_path):
+                with open(dst_path, "wb") as f:
+                    f.write(self._data)
+
+        downloaded = _DownloadedFileAdapter(filename, content)
+
+        # Run Textract (up to 115 s) — note: this function returns Flask response
+        # tuples on its error paths, so we guard for that explicitly.
+        extraction_result = textract_lines_by_page_from_file(downloaded, bucket=S3_BUCKET)
+
+        if isinstance(extraction_result, tuple):
+            # (dict, status_code) tuple returned from extractor error path
+            body = extraction_result[0]
+            error_msg = body.get("error", "Textract returned an error response") if isinstance(body, dict) else str(body)
+            raise RuntimeError(error_msg)
+
+        if "error" in extraction_result:
+            raise RuntimeError(extraction_result["error"])
+
+        line_index = extraction_result.get("line_index", {})
+
+        # Run GPT extraction
+        preview = extract_text_from_pdf(line_index)
+
+        job_store.set_done(job_id, {
+            "file": filename,
+            "artist_id": artist_id,
+            "original_document_id": original_document_id,
+            "preview": preview,
+        })
+
+    except Exception:
+        job_store.set_failed(job_id, traceback.format_exc())
+
+
 @app.route('/extract_from_url', methods=['POST'])
 def extract_from_url():
     artist_id = request.args.get("artist_id")
