@@ -1,17 +1,18 @@
 import awsgi
 from flask import Flask, request, jsonify
 import json
-import boto3,time
+import boto3
+import time
 import requests
 import urllib.parse
 import re
 import traceback
 import uuid
-from extractor import extract_text_from_pdf,textract_text_image_by_image,textract_lines_by_page_from_file
+from extractor import extract_text_from_pdf, textract_lines_by_page_from_file, textract_text_image_by_image
 from flask_cors import CORS
 import os
-import time
 from botocore.exceptions import NoCredentialsError
+import job_store
 
 app = Flask(__name__)
 CORS(app)
@@ -26,10 +27,16 @@ def handle_exception(e):
         "traceback": tb
     }), 500
 
-# S3 configuration
-S3_BUCKET = os.getenv("BUCKET_NAME")  # Replace with your actual bucket name
+# S3 / Lambda configuration
+S3_BUCKET = os.getenv("BUCKET_NAME")
+LAMBDA_FUNCTION_ARN = os.getenv(
+    "LAMBDA_FUNCTION_ARN",
+    "arn:aws:lambda:us-east-2:713944518341:function:extract-tool-api",
+)
+
 s3 = boto3.client('s3')
 textract = boto3.client('textract')
+lambda_client = boto3.client('lambda')
 
 JSON_FILE = "field_descriptions.json"
 
@@ -67,8 +74,8 @@ def uploads():
             preview = extract_text_from_pdf(line_index)
             results.append({
                 'file': file.filename,
-                "artist_id":artist_id,
-                "original_document_id":original_document_id,
+                "artist_id": artist_id,
+                "original_document_id": original_document_id,
                 'preview': preview
             })
         elif filename.endswith(('.doc', '.docx')):
@@ -104,8 +111,8 @@ def uploads():
         preview = extract_text_from_pdf(img_line_index)
         results.append({
             'file': ", ".join(file_list),
-            "artist_id":artist_id,
-            "original_document_id":original_document_id,
+            "artist_id": artist_id,
+            "original_document_id": original_document_id,
             'preview': preview
         })
     return jsonify(results)
@@ -143,6 +150,7 @@ def _normalize_to_direct_download(url: str) -> str:
         return url
     except Exception:
         return url
+
 
 @app.route('/presigned-upload-url', methods=['POST'])
 def presigned_upload_url():
@@ -262,75 +270,34 @@ def extract_from_url():
     s3_key = data.get('s3_key')
     file_url = data.get('url')
 
-    if s3_key:
-        # Generate a pre-signed GET URL from the s3_key so the rest of the
-        # flow (download → Textract) works without any further changes
-        file_url = s3.generate_presigned_url(
-            'get_object',
-            Params={'Bucket': S3_BUCKET, 'Key': s3_key},
-            ExpiresIn=300
-        )
-    elif file_url:
-        # Normalize Google Drive share links to direct-download
-        file_url = _normalize_to_direct_download(file_url)
-    else:
+    if not s3_key and not file_url:
         return jsonify({"error": "Missing 'url' or 's3_key' in request body"}), 400
-    try:
-        # Download the file (supports pre‑signed S3, public URLs, and normalized Google Drive links)
-        resp = requests.get(file_url, stream=True, timeout=30)
-        resp.raise_for_status()
-        content = resp.content
-        # Determine a filename
-        # 1) Try Content-Disposition
-        cd = resp.headers.get('Content-Disposition', '')
-        filename = None
-        if 'filename=' in cd:
-            filename = cd.split('filename=')[-1].strip('"; ')
-        # 2) Fallback to URL path
-        if not filename:
-            parsed = urllib.parse.urlparse(file_url)
-            path_name = os.path.basename(parsed.path)
-            filename = path_name or "document.pdf"
-        # Normalize extension (default to pdf)
-        if '.' in filename:
-            ext = filename.rsplit('.', 1)[-1].lower()
-        else:
-            ext = 'pdf'
-            filename = f"{filename}.pdf"
-        # Enforce allowed extensions
-        if ext not in ALLOWED_EXTS:
-            return jsonify({"error": f"Unsupported file type '.{ext}'. Allowed: {', '.join(ALLOWED_EXTS)}"}), 400
-        # Create a minimal FileStorage-like adapter so we can reuse the existing helper
-        class _DownloadedFileAdapter:
-            def __init__(self, name, data_bytes):
-                self.filename = name
-                self._data = data_bytes
-            def save(self, dst_path):
-                with open(dst_path, "wb") as f:
-                    f.write(self._data)
-        downloaded = _DownloadedFileAdapter(filename, content)
-        # Reuse the same Textract flow
-        extraction_result = textract_lines_by_page_from_file(downloaded, bucket=S3_BUCKET)
 
-        # Check if it's an error response
-        if isinstance(extraction_result, tuple):
-            return extraction_result
-        if "error" in extraction_result:
-            return jsonify(extraction_result), 400
+    job_id = str(uuid.uuid4())
+    job_store.create_job(job_id, s3_key or file_url)
 
-        line_index = extraction_result.get("line_index", {})
-        preview = extract_text_from_pdf(line_index)
-        return jsonify({
+    lambda_client.invoke(
+        FunctionName=LAMBDA_FUNCTION_ARN,
+        InvocationType="Event",   # async fire-and-forget — returns immediately
+        Payload=json.dumps({
+            "job_id": job_id,
+            "s3_key": s3_key,
             "url": file_url,
-            "file": filename,
-            "artist_id":artist_id,
-            "original_document_id":original_document_id,
-            "preview": preview
-        }), 200
-    except requests.exceptions.RequestException as e:
-        return jsonify({"error": f"Failed to download file: {str(e)}"}), 400
-    except Exception as e:
-        return jsonify({"error": f"Extraction failed: {str(e)}"}), 500
+            "artist_id": artist_id,
+            "original_document_id": original_document_id,
+        }).encode(),
+    )
+
+    return jsonify({"job_id": job_id, "status": "pending"}), 202
+
+
+@app.route('/result/<job_id>', methods=['GET'])
+def get_result(job_id):
+    try:
+        return jsonify(job_store.get_job(job_id)), 200
+    except KeyError:
+        return jsonify({"error": "Job not found"}), 404
+
 
 @app.route("/get_fields", methods=["GET"])
 def get_fields():
@@ -387,18 +354,25 @@ def max_route():
     return jsonify({"message": "Api gateway is working"}), 200
 
 
-
-
 if __name__ == '__main__':
     app.run(debug=True)
 
 
-
 def lambda_handler(event, context):
-    # Handle different event types
     if 'httpMethod' in event:
-        # API Gateway event
+        # Standard API Gateway HTTP request
         return awsgi.response(app, event, context)
+    elif 'job_id' in event:
+        # Background async invocation dispatched by extract_from_url.
+        # Runs outside API Gateway so no 29 s timeout constraint.
+        _run_extraction(
+            job_id=event['job_id'],
+            s3_key=event.get('s3_key'),
+            url=event.get('url'),
+            artist_id=event.get('artist_id'),
+            original_document_id=event.get('original_document_id'),
+        )
+        return {'statusCode': 200, 'body': 'Extraction complete'}
     elif 'Records' in event:
         # S3 or other AWS service event
         return {
@@ -406,7 +380,7 @@ def lambda_handler(event, context):
             'body': 'Event processed successfully'
         }
     else:
-        # Simple test event or other event type
+        # Simple test event
         return {
             'statusCode': 200,
             'body': 'Lambda function is working! Use API Gateway to access the endpoints.',
@@ -414,90 +388,3 @@ def lambda_handler(event, context):
                 'Content-Type': 'application/json'
             }
         }
-
-
-json_str = {
-    "Alternative Counterparties": {
-        "page_number": 1,
-        "value": "RCA Records, Sony Music Entertainment"
-    },
-    "Artist Name": {
-        "page_number": 1,
-        "value": "A$AP Mob"
-    },
-    "Classification of Recoupment Language": {
-        "page_number": 4,
-        "value": "No royalty shall be payable to you hereunder until Company has recouped all Recording Costs incurred in connection with the Album at the \"net artist\" rate (i.e., Our Basic Rate less the Producer Basic Rate and the royalty rate payable to all other producers, engineers, mixers, and other royalty participants) (excluding the Advance and any \"in-pocket\" Artist advances. After recoupment of such Recording Costs as aforesaid, royalties shall be payable to you hereunder for all records sold for which royalties are payable, retroactively from the first such record sold, subject to recoupment from such royalties of the Advance."
-    },
-    "Client Party": {
-        "page_number": 1,
-        "value": "19/20 Music, LLC"
-    },
-    "Direct Counterparty": {
-        "page_number": 1,
-        "value": "ASAP WORLDWIDE, LLC"
-    },
-    "Distributor": {
-        "page_number": 1,
-        "value": "RCA Records"
-    },
-    "Document Name": {
-        "page_number": 1,
-        "value": "A$AP Mob - Cozy Tapes: Vol. 2 FX"
-    },
-    "Effective Date": {
-        "page_number": 1,
-        "value": "August 1, 2017"
-    },
-    "Execution Status": {
-        "page_number": 9,
-        "value": "FX"
-    },
-    "Label": {
-        "page_number": 1,
-        "value": "Sony Music Entertainment"
-    },
-    "Lawyer Information": {
-        "page_number": 1,
-        "value": {
-            "client_lawyer": "C/O B. Lawrence Watkins & Associates, P.C., 325 Edgewood Avenue, SE, Suite 200, Atlanta, Georgia 30312",
-            "counterparty_lawyer": "C/O Davis Shapiro Lewit Grabel Leven Granderson & Blake, LLP, 150 S. Rodeo Drive, Suite 200, Beverly Hills, CA 90212"
-        }
-    },
-    "Legal Advance": {
-        "page_number": 3,
-        "value": "$1,000"
-    },
-    "Organization Counting Units": {
-        "page_number": 4,
-        "value": "USNRC"
-    },
-    "Producer Advance Legal Recoupment": {
-        "page_number": 3,
-        "value": "$6,000"
-    },
-    "Producer Royalty Points": {
-        "page_number": 4,
-        "value": "3% of the Royalty Base Price"
-    },
-    "Recoupment Classification": {
-        "page_number": 3,
-        "value": "non-returnable but recoupable"
-    },
-    "Single/Multisong Line": {
-        "page_number": 1,
-        "value": "one (1) master recording"
-    },
-    "Song Title": {
-        "page_number": 1,
-        "value": "Bahamas"
-    },
-    "Third Party Money": {
-        "page_number": 13,
-        "value": "15%"
-    },
-    "Type of Royalty": {
-        "page_number": 4,
-        "value": "NAR"
-    }
-}
