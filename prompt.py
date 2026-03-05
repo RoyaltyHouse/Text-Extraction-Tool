@@ -9,6 +9,7 @@ with open("field_descriptions.json", "r", encoding="utf-8") as f:
 UNIVERSAL_FIELDS = [
     "Document Name",
     "Execution Status",
+    "Signatures",
     "Song Title",
     "Artist Name",
     "Single/Multisong Line",
@@ -192,6 +193,9 @@ Rules:
 PHASE 3 — UNIVERSAL FIELDS (once for the whole agreement)
 {universal_field_text}
 
+SIGNATURE ANALYSIS ORDER: Populate "Signatures" FIRST by scanning the signature block, then
+derive "Execution Status" (FX/PX/NX) from the signed/unsigned counts in that array.
+
 PHASE 4 — PRODUCER-SPECIFIC FIELDS (for EACH producer)
 {producer_field_text}
 
@@ -215,7 +219,11 @@ OUTPUT FORMAT
 -------------
 {{
   "Document Name": {{"value": "...", "lines": [1]}},
-  "Execution Status": {{"value": "...", "lines": [1]}},
+  "Execution Status": {{"value": "FX|PX|NX", "lines": [1]}},
+  "Signatures": [
+    {{"value": "Party Role or Name", "signed": true, "lines": [1]}},
+    {{"value": "Party Role or Name", "signed": false, "lines": [2]}}
+  ],
   "Song Title": {{"value": "...", "lines": [1]}},
   "Artist Name": {{"value": "...", "lines": [1]}},
   "Single/Multisong Line": {{"value": "...", "lines": [1]}},
