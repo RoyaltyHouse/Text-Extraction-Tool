@@ -233,20 +233,27 @@ def extract_field_information(line_index):
     prompt = build_extraction_prompt(line_index)
 
     response = client.chat.completions.create(
-        model="gpt-4-1106-preview",
+        model="gpt-4o",
         messages=[
             {"role": "system", "content": "You are an intelligent document extraction assistant."},
             {"role": "user", "content": prompt},
         ],
         temperature=0.2,
+        max_tokens=16384,
     )
 
-    content = _strip_markdown_fences(response.choices[0].message.content)
+    choice = response.choices[0]
+    if choice.finish_reason == "length":
+        print(f"[ERROR] GPT response truncated (hit max_tokens). Input may be too large.")
+        return {"error": "Extraction failed: response truncated due to document length"}
+
+    content = _strip_markdown_fences(choice.message.content or "")
 
     try:
         extracted_fields = json.loads(content)
     except json.JSONDecodeError as e:
         print(f"[ERROR] Failed to parse GPT response as JSON: {e}")
+        print(f"[ERROR] Raw content (first 500 chars): {content[:500]}")
         return {"error": f"Failed to parse extraction results: {e}"}
 
     if line_index:
