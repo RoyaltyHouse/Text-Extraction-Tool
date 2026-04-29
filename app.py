@@ -71,7 +71,8 @@ def uploads():
                 return jsonify(extraction_result), 400
 
             line_index = extraction_result.get("line_index", {})
-            preview = extract_text_from_pdf(line_index)
+            annotations = extraction_result.get("annotations", [])
+            preview = extract_text_from_pdf(line_index, annotations)
             results.append({
                 'file': file.filename,
                 "artist_id": artist_id,
@@ -247,9 +248,10 @@ def _run_extraction(job_id, s3_key, url=None, artist_id=None, original_document_
             raise RuntimeError(extraction_result["error"])
 
         line_index = extraction_result.get("line_index", {})
+        annotations = extraction_result.get("annotations", [])
 
         # Run GPT extraction
-        preview = extract_text_from_pdf(line_index)
+        preview = extract_text_from_pdf(line_index, annotations)
 
         job_store.set_done(job_id, {
             "file": filename,

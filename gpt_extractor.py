@@ -228,9 +228,9 @@ def _strip_markdown_fences(content):
     return content
 
 
-def extract_field_information(line_index):
+def extract_field_information(line_index, annotations=None):
     """Single-pass extraction with line-number-based coordinate resolution."""
-    prompt = build_extraction_prompt(line_index)
+    prompt = build_extraction_prompt(line_index, annotations or [])
 
     response = client.chat.completions.create(
         model="gpt-4o",

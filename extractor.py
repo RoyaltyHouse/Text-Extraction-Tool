@@ -12,12 +12,12 @@ s3 = boto3.client('s3')
 textract = boto3.client('textract')
 
 
-def extract_text_from_pdf(line_index):
+def extract_text_from_pdf(line_index, annotations=None):
     if not line_index:
         return {"error": "No text provided for extraction"}
     print("[DEBUG] Extraction started")
 
-    result = extract_field_information(line_index)
+    result = extract_field_information(line_index, annotations or [])
 
     if isinstance(result, dict):
         return result
@@ -41,6 +41,46 @@ def extract_text_from_word(path):
 
 
 
+def _block_bbox(block):
+    return (block or {}).get("Geometry", {}).get("BoundingBox")
+
+
+def _resolve_kv_text(block, block_by_id):
+    """Concatenate the text of a KEY or VALUE block by walking CHILD relationships."""
+    if not block:
+        return ""
+    parts = []
+    for rel in block.get("Relationships", []):
+        if rel.get("Type") != "CHILD":
+            continue
+        for cid in rel.get("Ids", []):
+            child = block_by_id.get(cid)
+            if not child:
+                continue
+            if child.get("BlockType") == "WORD" and "Text" in child:
+                parts.append(child["Text"])
+            elif child.get("BlockType") == "SELECTION_ELEMENT":
+                parts.append(f"[{child.get('SelectionStatus', 'UNSELECTED')}]")
+    return " ".join(parts).strip()
+
+
+def _nearest_global_line(page, bbox, lines_by_page_with_global):
+    """Return the global line number whose LINE block sits closest vertically to bbox."""
+    candidates = lines_by_page_with_global.get(page, [])
+    if not candidates or not bbox:
+        return None
+    cy = bbox["Top"] + bbox["Height"] / 2
+
+    def vertical_distance(item):
+        line_block, _ = item
+        lb_bbox = _block_bbox(line_block) or {}
+        line_cy = lb_bbox.get("Top", 0) + lb_bbox.get("Height", 0) / 2
+        return abs(line_cy - cy)
+
+    _, nearest_global = min(candidates, key=vertical_distance)
+    return nearest_global
+
+
 def textract_lines_by_page_from_file(file, bucket=S3_BUCKET):
 
     # Save the file to a temporary local path
@@ -53,9 +93,13 @@ def textract_lines_by_page_from_file(file, bucket=S3_BUCKET):
     s3.upload_file(local_path, bucket, key)
     print(f"[DEBUG] Upload successful: s3://{bucket}/{key}")
 
-    # Start async text detection
-    job = textract.start_document_text_detection(
-        DocumentLocation={"S3Object": {"Bucket": bucket, "Name": key}})
+    # Start async document analysis with FORMS + SIGNATURES so we get
+    # KEY_VALUE_SET pairs (e.g. "Name:" → "John Smith") and SIGNATURE blocks
+    # (wet/digital signatures Textract detects independent of OCR text).
+    job = textract.start_document_analysis(
+        DocumentLocation={"S3Object": {"Bucket": bucket, "Name": key}},
+        FeatureTypes=["FORMS", "SIGNATURES"],
+    )
     job_id = job["JobId"]
     print(f"[DEBUG] Started Textract job with JobId: {job_id}")
 
@@ -65,7 +109,7 @@ def textract_lines_by_page_from_file(file, bucket=S3_BUCKET):
         if time.time() - start_time > 115:
             return {"error": "Text extraction failed due to poor image quality, formatting, or an unreadable document."}, 200
 
-        resp = textract.get_document_text_detection(JobId=job_id, MaxResults=1000)
+        resp = textract.get_document_analysis(JobId=job_id, MaxResults=1000)
         status = resp["JobStatus"]
         print(f"[DEBUG] Job status: {status}")
 
@@ -81,7 +125,7 @@ def textract_lines_by_page_from_file(file, bucket=S3_BUCKET):
     blocks = resp["Blocks"]
     next_token = resp.get("NextToken")
     while next_token:
-        resp = textract.get_document_text_detection(
+        resp = textract.get_document_analysis(
             JobId=job_id, MaxResults=1000, NextToken=next_token
         )
         blocks.extend(resp["Blocks"])
@@ -97,8 +141,10 @@ def textract_lines_by_page_from_file(file, bucket=S3_BUCKET):
             page_num = b.get("Page", 1)
             lines_by_page.setdefault(page_num, []).append(b)
 
-    # Build line_index with global numbering and child WORD bboxes
+    # Build line_index with global numbering and child WORD bboxes.
+    # Also keep a (line_block, global_num) list per page for nearest-line lookup.
     line_index = {}
+    lines_by_page_with_global = {}
     global_line_num = 1
     for page_num in sorted(lines_by_page.keys()):
         for line_block in lines_by_page[page_num]:
@@ -121,11 +167,67 @@ def textract_lines_by_page_from_file(file, bucket=S3_BUCKET):
                 "text": line_block["Text"],
                 "words": words,
             }
+            lines_by_page_with_global.setdefault(page_num, []).append(
+                (line_block, global_line_num)
+            )
             global_line_num += 1
 
     if not line_index:
         return {"error": "No extractable text found in the document."}, 400
 
+    # Parse FORMS + SIGNATURES into structural annotations so the prompt can
+    # use them as ground truth for signed/unsigned determination.
+    annotations = []
+
+    for b in blocks:
+        if b.get("BlockType") != "SIGNATURE":
+            continue
+        page = b.get("Page", 1)
+        bbox = _block_bbox(b)
+        if not bbox:
+            continue
+        annotations.append({
+            "type": "signature",
+            "page": page,
+            "confidence": round(b.get("Confidence", 0), 1),
+            "near_line": _nearest_global_line(page, bbox, lines_by_page_with_global),
+        })
+
+    value_block_by_id = {
+        b["Id"]: b
+        for b in blocks
+        if b.get("BlockType") == "KEY_VALUE_SET" and "VALUE" in b.get("EntityTypes", [])
+    }
+
+    for kb in blocks:
+        if kb.get("BlockType") != "KEY_VALUE_SET" or "KEY" not in kb.get("EntityTypes", []):
+            continue
+        key_text = _resolve_kv_text(kb, block_by_id)
+        if not key_text:
+            continue
+
+        value_block = None
+        for rel in kb.get("Relationships", []):
+            if rel.get("Type") == "VALUE":
+                ids = rel.get("Ids", [])
+                if ids:
+                    value_block = value_block_by_id.get(ids[0])
+                    break
+        value_text = _resolve_kv_text(value_block, block_by_id) if value_block else ""
+
+        page = kb.get("Page", 1)
+        annotations.append({
+            "type": "form_field",
+            "page": page,
+            "key": key_text,
+            "value": value_text,
+            "near_line": _nearest_global_line(page, _block_bbox(kb), lines_by_page_with_global),
+        })
+
+    annotations.sort(key=lambda a: (a["page"], a.get("near_line") or 0))
+
     sample = [line_index[i]["text"] for i in sorted(line_index)[:5]]
     print("[DEBUG] Sample extracted lines:", sample)
-    return {"line_index": line_index}
+    print(f"[DEBUG] Detected {sum(1 for a in annotations if a['type'] == 'signature')} signatures, "
+          f"{sum(1 for a in annotations if a['type'] == 'form_field')} form fields")
+    return {"line_index": line_index, "annotations": annotations}

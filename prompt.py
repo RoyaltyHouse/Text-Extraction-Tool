@@ -9,7 +9,7 @@ with open("field_descriptions.json", "r", encoding="utf-8") as f:
 UNIVERSAL_FIELDS = [
     "Document Name",
     "Execution Status",
-    "Signatures",
+    "signatures",
     "Song Title",
     "Artist Name",
     "Single/Multisong Line",
@@ -90,6 +90,42 @@ def _format_contract_text(line_index):
     return "\n".join(parts)
 
 
+def _format_annotations(annotations):
+    """Render Textract FORM/SIGNATURE evidence as a structured block.
+
+    GPT can use these as ground truth for the Signatures array — independent
+    of the OCR'd text, which misses wet/digital signatures entirely.
+    """
+    if not annotations:
+        return ""
+
+    by_page = {}
+    for ann in annotations:
+        by_page.setdefault(ann["page"], []).append(ann)
+
+    parts = [
+        "",
+        "DOCUMENT ANALYSIS EVIDENCE (independent of OCR text)",
+        "----------------------------------------------------",
+        "Textract detected the following signatures and form fields. Use these as",
+        "GROUND TRUTH when populating the Signatures array — a SIGNATURE detection",
+        "or non-empty Name/By form value means that party signed, even if the",
+        "signature itself doesn't appear in the OCR'd text above.",
+        "",
+    ]
+    for page in sorted(by_page.keys()):
+        parts.append(f"Page {page}:")
+        for ann in by_page[page]:
+            near = f" near [L{ann['near_line']}]" if ann.get("near_line") else ""
+            if ann["type"] == "signature":
+                parts.append(f"  - SIGNATURE detected{near} (confidence {ann['confidence']}%)")
+            else:
+                key = ann["key"]
+                val = ann["value"] if ann["value"] else "[BLANK]"
+                parts.append(f'  - FORM FIELD{near}: "{key}" => "{val}"')
+    return "\n".join(parts)
+
+
 def _build_producer_example(placeholder_name, indent="    "):
     """Build one entry in the producers array for the output format example."""
     producer_example_fields = [f for f in PRODUCER_FIELDS if f in field_descriptions_details]
@@ -120,11 +156,13 @@ def _build_song_example(placeholder_title, indent="    "):
     return "\n".join(lines)
 
 
-def build_extraction_prompt(line_index):
+def build_extraction_prompt(line_index, annotations=None):
     """Build a single-pass extraction prompt for GPT.
 
     Args:
         line_index: dict of {line_num: {page, text, words}} from Textract
+        annotations: list of structural annotations (signatures, form fields)
+            from Textract FORMS+SIGNATURES analysis
     """
     universal_field_text = _format_field_list(
         [f for f in UNIVERSAL_FIELDS if f in field_descriptions_details]
@@ -138,7 +176,18 @@ def build_extraction_prompt(line_index):
         f'"{f}"' for f in SONG_FIELDS if f in field_descriptions_details
     )
     contract_text = _format_contract_text(line_index)
+    annotations_block = _format_annotations(annotations or [])
     array_fields_list = ", ".join(f'"{f}"' for f in sorted(ARRAY_FIELDS)) or "none"
+
+    # Only point GPT at the evidence block when one is actually present.
+    if annotations_block:
+        signature_evidence_instruction = (
+            "\nCross-reference the DOCUMENT ANALYSIS EVIDENCE block at the end of this prompt — a SIGNATURE\n"
+            "detection or a non-empty Name/By form value is GROUND TRUTH that the party signed, even when\n"
+            "the signature does not appear as text on the corresponding line."
+        )
+    else:
+        signature_evidence_instruction = ""
 
     producer_example_1 = _build_producer_example("<First Producer Name>")
     producer_example_2 = _build_producer_example("<Second Producer Name>")
@@ -193,8 +242,8 @@ Rules:
 PHASE 3 — UNIVERSAL FIELDS (once for the whole agreement)
 {universal_field_text}
 
-SIGNATURE ANALYSIS ORDER: Populate "Signatures" FIRST by scanning the signature block, then
-derive "Execution Status" (FX/PX/NX) from the signed/unsigned counts in that array.
+SIGNATURE ANALYSIS ORDER: Populate "signatures" FIRST by scanning the signature block, then
+derive "Execution Status" (FX/PX/NX) from the signed/unsigned counts in that array.{signature_evidence_instruction}
 
 PHASE 4 — PRODUCER-SPECIFIC FIELDS (for EACH producer)
 {producer_field_text}
@@ -220,7 +269,7 @@ OUTPUT FORMAT
 {{
   "Document Name": {{"value": "...", "lines": [1]}},
   "Execution Status": {{"value": "FX|PX|NX", "lines": [1]}},
-  "Signatures": [
+  "signatures": [
     {{"value": "Party Role or Name", "signed": true, "lines": [1]}},
     {{"value": "Party Role or Name", "signed": false, "lines": [2]}}
   ],
@@ -250,4 +299,5 @@ CONTRACT TEXT
 \"\"\"
 {contract_text}
 \"\"\"
+{annotations_block}
 """.strip()
