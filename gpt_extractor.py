@@ -249,6 +249,14 @@ def extract_field_information(line_index, annotations=None):
     """Single-pass extraction with line-number-based coordinate resolution."""
     prompt = build_extraction_prompt(line_index, annotations or [])
 
+    # Temporary: log the evidence block so we can see what Textract actually
+    # detected for each parse. Remove once signature attribution is stable.
+    evidence_start = prompt.find("DOCUMENT ANALYSIS EVIDENCE")
+    if evidence_start != -1:
+        print("[DEBUG] Evidence block:\n" + prompt[evidence_start:evidence_start + 2000])
+    else:
+        print("[DEBUG] No evidence block in prompt (no annotations detected)")
+
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
