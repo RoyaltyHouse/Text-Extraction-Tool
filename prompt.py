@@ -111,18 +111,23 @@ def _format_annotations(annotations):
         "GROUND TRUTH when populating the Signatures array — a SIGNATURE detection",
         "or non-empty Name/By form value means that party signed, even if the",
         "signature itself doesn't appear in the OCR'd text above.",
+        "Each entry includes a horizontal page position (x=0.00 is far left, x=1.00 is far right).",
+        "Match each annotation to the party whose name sits at a similar x position in the text.",
+        "This works for any layout — 2-column, 3-column, or more.",
         "",
     ]
     for page in sorted(by_page.keys()):
         parts.append(f"Page {page}:")
         for ann in by_page[page]:
             near = f" near [L{ann['near_line']}]" if ann.get("near_line") else ""
+            left = ann.get("left")
+            pos = f" (x={left:.2f})" if left is not None else ""
             if ann["type"] == "signature":
-                parts.append(f"  - SIGNATURE detected{near} (confidence {ann['confidence']}%)")
+                parts.append(f"  - SIGNATURE detected{near}{pos} (confidence {ann['confidence']}%)")
             else:
                 key = ann["key"]
                 val = ann["value"] if ann["value"] else "[BLANK]"
-                parts.append(f'  - FORM FIELD{near}: "{key}" => "{val}"')
+                parts.append(f'  - FORM FIELD{near}{pos}: "{key}" => "{val}"')
     return "\n".join(parts)
 
 

@@ -191,6 +191,7 @@ def textract_lines_by_page_from_file(file, bucket=S3_BUCKET):
             "page": page,
             "confidence": round(b.get("Confidence", 0), 1),
             "near_line": _nearest_global_line(page, bbox, lines_by_page_with_global),
+            "left": round(bbox["Left"], 3),
         })
 
     value_block_by_id = {
@@ -216,12 +217,14 @@ def textract_lines_by_page_from_file(file, bucket=S3_BUCKET):
         value_text = _resolve_kv_text(value_block, block_by_id) if value_block else ""
 
         page = kb.get("Page", 1)
+        kb_bbox = _block_bbox(kb)
         annotations.append({
             "type": "form_field",
             "page": page,
             "key": key_text,
             "value": value_text,
-            "near_line": _nearest_global_line(page, _block_bbox(kb), lines_by_page_with_global),
+            "near_line": _nearest_global_line(page, kb_bbox, lines_by_page_with_global),
+            "left": round(kb_bbox["Left"], 3) if kb_bbox else None,
         })
 
     annotations.sort(key=lambda a: (a["page"], a.get("near_line") or 0))
