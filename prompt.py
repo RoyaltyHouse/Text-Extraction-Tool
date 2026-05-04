@@ -216,9 +216,10 @@ from other fields.
   RIGHT: "2.0%"
 
 VALUES MUST BE VERBATIM from the document text. NEVER invent, infer, combine, or guess.
-Found field: {{"value": "...", "lines": [L1, L2]}}
+Found field: {{"value": "...", "lines": [42, 43]}}
 Missing field: {{"value": "not found", "lines": []}}
-Array fields ({array_fields_list}): [{{"value": "...", "lines": [L1]}}, ...]
+Array fields ({array_fields_list}): [{{"value": "...", "lines": [42]}}, ...]
+"lines" must contain plain integers only — NOT strings, NOT the [L] prefix from the contract text.
 NEVER omit a field. Return valid JSON ONLY — no Markdown, no explanation.
 
 PHASE 1 — IDENTIFY PRODUCERS
