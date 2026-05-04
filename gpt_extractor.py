@@ -214,6 +214,23 @@ def _page_from_lines(line_nums, line_index):
     return None
 
 
+def _derive_execution_status(signatures):
+    """Compute FX/PX/NX from the signatures array — no GPT involvement.
+
+    GPT populates signatures[].signed but its derived Execution Status verdict
+    is unreliable. Overwrite it with the mechanical count.
+    """
+    if not signatures or not isinstance(signatures, list):
+        return None
+    signed = sum(1 for s in signatures if s.get("signed") is True)
+    total = len(signatures)
+    if total == 0 or signed == 0:
+        return "NX"
+    if signed == total:
+        return "FX"
+    return "PX"
+
+
 # ── GPT interaction ──────────────────────────────────────────────────────────
 
 def _strip_markdown_fences(content):
@@ -255,6 +272,18 @@ def extract_field_information(line_index, annotations=None):
         print(f"[ERROR] Failed to parse GPT response as JSON: {e}")
         print(f"[ERROR] Raw content (first 500 chars): {content[:500]}")
         return {"error": f"Failed to parse extraction results: {e}"}
+
+    # Override GPT's Execution Status verdict with a mechanical count from
+    # the signatures array — GPT populates signed/unsigned per party but
+    # its derived FX/PX/NX is unreliable.
+    sigs = extracted_fields.get("signatures", [])
+    computed_status = _derive_execution_status(sigs)
+    if computed_status is not None:
+        es = extracted_fields.get("Execution Status")
+        if isinstance(es, dict):
+            es["value"] = computed_status
+        else:
+            extracted_fields["Execution Status"] = {"value": computed_status, "lines": []}
 
     if line_index:
         try:

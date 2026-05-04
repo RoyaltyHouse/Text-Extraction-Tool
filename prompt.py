@@ -242,8 +242,10 @@ Rules:
 PHASE 3 — UNIVERSAL FIELDS (once for the whole agreement)
 {universal_field_text}
 
-SIGNATURE ANALYSIS ORDER: Populate "signatures" FIRST by scanning the signature block, then
-derive "Execution Status" (FX/PX/NX) from the signed/unsigned counts in that array.{signature_evidence_instruction}
+SIGNATURE ANALYSIS ORDER: Populate "signatures" by scanning the signature block. Your only
+job is to identify each party, whether they signed, and which lines their block appears on.
+"Execution Status" is computed automatically — set its value to "TBD" and its lines to the
+first line of the signature block.{signature_evidence_instruction}
 
 PHASE 4 — PRODUCER-SPECIFIC FIELDS (for EACH producer)
 {producer_field_text}
