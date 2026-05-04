@@ -251,7 +251,7 @@ def extract_field_information(line_index, annotations=None):
 
     # Temporary: log the evidence block so we can see what Textract actually
     # detected for each parse. Remove once signature attribution is stable.
-    evidence_start = prompt.find("DOCUMENT ANALYSIS EVIDENCE")
+    evidence_start = prompt.find("DOCUMENT ANALYSIS EVIDENCE (independent of OCR text)")
     if evidence_start != -1:
         print("[DEBUG] Evidence block:\n" + prompt[evidence_start:evidence_start + 2000])
     else:
