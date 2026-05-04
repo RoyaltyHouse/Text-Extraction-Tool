@@ -247,28 +247,7 @@ def _strip_markdown_fences(content):
 
 def extract_field_information(line_index, annotations=None):
     """Single-pass extraction with line-number-based coordinate resolution."""
-    anns = annotations or []
-    prompt = build_extraction_prompt(line_index, anns)
-
-    sig_anns = [a for a in anns if a.get("type") == "signature"]
-    form_anns = [a for a in anns if a.get("type") == "form_field"]
-    print(f"[DEBUG] {len(sig_anns)} SIGNATURE annotations:")
-    for a in sig_anns:
-        print(
-            f"  - page={a['page']} near=L{a.get('near_line')} "
-            f"x={a.get('left')} conf={a.get('confidence')}%"
-        )
-    short_forms = [a for a in form_anns if len(a.get("value") or "") < 60]
-    print(
-        f"[DEBUG] {len(short_forms)} short FORM FIELDs "
-        f"(out of {len(form_anns)} total):"
-    )
-    for a in short_forms:
-        val = a.get("value") or "[BLANK]"
-        print(
-            f'  - page={a["page"]} near=L{a.get("near_line")} '
-            f'x={a.get("left")} "{a["key"]}" => "{val}"'
-        )
+    prompt = build_extraction_prompt(line_index, annotations or [])
 
     response = client.chat.completions.create(
         model="gpt-4o",

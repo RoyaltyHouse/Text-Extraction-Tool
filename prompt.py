@@ -93,8 +93,9 @@ def _format_contract_text(line_index):
 def _format_annotations(annotations):
     """Render Textract FORM/SIGNATURE evidence as a structured block.
 
-    GPT can use these as ground truth for the Signatures array — independent
-    of the OCR'd text, which misses wet/digital signatures entirely.
+    Independent of the OCR'd text, which misses wet/digital signatures entirely.
+    Each entry carries an x position (0.00=left, 1.00=right) so multi-column
+    signature blocks can be attributed to the right party.
     """
     if not annotations:
         return ""
@@ -105,15 +106,9 @@ def _format_annotations(annotations):
 
     parts = [
         "",
-        "DOCUMENT ANALYSIS EVIDENCE (independent of OCR text)",
-        "----------------------------------------------------",
-        "Textract detected the following signatures and form fields. Use these as",
-        "GROUND TRUTH when populating the Signatures array — a SIGNATURE detection",
-        "or non-empty Name/By form value means that party signed, even if the",
-        "signature itself doesn't appear in the OCR'd text above.",
-        "Each entry includes a horizontal page position (x=0.00 is far left, x=1.00 is far right).",
-        "Match each annotation to the party whose name sits at a similar x position in the text.",
-        "This works for any layout — 2-column, 3-column, or more.",
+        "TEXTRACT EVIDENCE — ground truth for the signatures array.",
+        "A SIGNATURE detection or non-empty By:/Name: value at a party's x position",
+        "means that party signed. Match each entry to the party at a similar x.",
         "",
     ]
     for page in sorted(by_page.keys()):
@@ -184,16 +179,6 @@ def build_extraction_prompt(line_index, annotations=None):
     annotations_block = _format_annotations(annotations or [])
     array_fields_list = ", ".join(f'"{f}"' for f in sorted(ARRAY_FIELDS)) or "none"
 
-    # Only point GPT at the evidence block when one is actually present.
-    if annotations_block:
-        signature_evidence_instruction = (
-            "\nCross-reference the DOCUMENT ANALYSIS EVIDENCE block at the end of this prompt — a SIGNATURE\n"
-            "detection or a non-empty Name/By form value is GROUND TRUTH that the party signed, even when\n"
-            "the signature does not appear as text on the corresponding line."
-        )
-    else:
-        signature_evidence_instruction = ""
-
     producer_example_1 = _build_producer_example("<First Producer Name>")
     producer_example_2 = _build_producer_example("<Second Producer Name>")
     song_example_1 = _build_song_example("<Song Title 1>")
@@ -248,10 +233,11 @@ Rules:
 PHASE 3 — UNIVERSAL FIELDS (once for the whole agreement)
 {universal_field_text}
 
-SIGNATURE ANALYSIS ORDER: Populate "signatures" by scanning the signature block. Your only
-job is to identify each party, whether they signed, and which lines their block appears on.
-"Execution Status" is computed automatically — set its value to "TBD" and its lines to the
-first line of the signature block.{signature_evidence_instruction}
+SIGNATURES: Populate "signatures" by scanning the signature block. Identify each party,
+whether they signed, and the line(s) of their block. Anchor on keyword cues — "By:",
+"Name:", "Date:", "Signature", "Signed", "Authorized Signatory" — and group nearby Name +
+Signature (+ Date) fields into one block per party. EXCLUDE any SoundExchange LOD blocks.
+"Execution Status" is computed automatically from this array — set its value to "TBD".
 
 PHASE 4 — PRODUCER-SPECIFIC FIELDS (for EACH producer)
 {producer_field_text}
