@@ -119,7 +119,7 @@ def textract_lines_by_page_from_file(file, bucket=S3_BUCKET):
 
 
     if status != "SUCCEEDED":
-        raise RuntimeError(f"Textract job ended with status: {status}")
+        return {"error": f"Textract job ended with status: {status}"}, 500
 
     # Collect all pages using NextToken
     blocks = resp["Blocks"]
@@ -186,12 +186,13 @@ def textract_lines_by_page_from_file(file, bucket=S3_BUCKET):
         bbox = _block_bbox(b)
         if not bbox:
             continue
+        left = bbox.get("Left")
         annotations.append({
             "type": "signature",
             "page": page,
             "confidence": round(b.get("Confidence", 0), 1),
             "near_line": _nearest_global_line(page, bbox, lines_by_page_with_global),
-            "left": round(bbox["Left"], 3),
+            "left": round(left, 3) if left is not None else None,
         })
 
     value_block_by_id = {
@@ -218,16 +219,17 @@ def textract_lines_by_page_from_file(file, bucket=S3_BUCKET):
 
         page = kb.get("Page", 1)
         kb_bbox = _block_bbox(kb)
+        left = kb_bbox.get("Left") if kb_bbox else None
         annotations.append({
             "type": "form_field",
             "page": page,
             "key": key_text,
             "value": value_text,
             "near_line": _nearest_global_line(page, kb_bbox, lines_by_page_with_global),
-            "left": round(kb_bbox["Left"], 3) if kb_bbox else None,
+            "left": round(left, 3) if left is not None else None,
         })
 
-    annotations.sort(key=lambda a: (a["page"], a.get("near_line") or 0))
+    annotations.sort(key=lambda a: (a["page"], a.get("near_line") or 0, a.get("left") or 0))
 
     sample = [line_index[i]["text"] for i in sorted(line_index)[:5]]
     print("[DEBUG] Sample extracted lines:", sample)

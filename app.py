@@ -314,7 +314,7 @@ def update_field():
     field = data.get("field")
     value = data.get("value")
     print(data)
-    if not field or not value:
+    if not field or value is None:
         return jsonify({"error": "Missing 'field' or 'value'"}), 400
 
     # Load existing data
