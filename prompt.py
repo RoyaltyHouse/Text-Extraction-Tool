@@ -7,7 +7,6 @@ with open("field_descriptions.json", "r", encoding="utf-8") as f:
 
 # Fields extracted once and shared across the entire agreement
 UNIVERSAL_FIELDS = [
-    "Document Name",
     "Execution Status",
     "signatures",
     "Song Title",
@@ -261,7 +260,6 @@ Fields: {song_field_names}
 OUTPUT FORMAT
 -------------
 {{
-  "Document Name": {{"value": "...", "lines": [1]}},
   "Execution Status": {{"value": "FX|PX|NX", "lines": [1]}},
   "signatures": [
     {{"value": "Party Role or Name", "signed": true, "lines": [1]}},
