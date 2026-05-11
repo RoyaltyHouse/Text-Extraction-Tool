@@ -186,13 +186,14 @@ def textract_lines_by_page_from_file(file, bucket=S3_BUCKET):
         bbox = _block_bbox(b)
         if not bbox:
             continue
-        left = bbox.get("Left")
+        left, top = bbox.get("Left"), bbox.get("Top")
         annotations.append({
             "type": "signature",
             "page": page,
             "confidence": round(b.get("Confidence", 0), 1),
             "near_line": _nearest_global_line(page, bbox, lines_by_page_with_global),
             "left": round(left, 3) if left is not None else None,
+            "top": round(top, 3) if top is not None else None,
         })
 
     value_block_by_id = {
@@ -220,6 +221,7 @@ def textract_lines_by_page_from_file(file, bucket=S3_BUCKET):
         page = kb.get("Page", 1)
         kb_bbox = _block_bbox(kb)
         left = kb_bbox.get("Left") if kb_bbox else None
+        top = kb_bbox.get("Top") if kb_bbox else None
         annotations.append({
             "type": "form_field",
             "page": page,
@@ -227,6 +229,7 @@ def textract_lines_by_page_from_file(file, bucket=S3_BUCKET):
             "value": value_text,
             "near_line": _nearest_global_line(page, kb_bbox, lines_by_page_with_global),
             "left": round(left, 3) if left is not None else None,
+            "top": round(top, 3) if top is not None else None,
         })
 
     annotations.sort(key=lambda a: (a["page"], a.get("near_line") or 0, a.get("left") or 0))
