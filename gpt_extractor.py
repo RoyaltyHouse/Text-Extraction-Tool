@@ -283,13 +283,13 @@ def extract_field_information(line_index, annotations=None):
     prompt = build_extraction_prompt(line_index, blocks)
 
     response = client.chat.completions.create(
-        model="gpt-4o",
+        model="gpt-5.4-mini",
         messages=[
             {"role": "system", "content": "You are an intelligent document extraction assistant."},
             {"role": "user", "content": prompt},
         ],
-        temperature=0.2,
-        max_tokens=16384,
+        max_completion_tokens=16384,
+        reasoning_effort="minimal",
     )
 
     choice = response.choices[0]
