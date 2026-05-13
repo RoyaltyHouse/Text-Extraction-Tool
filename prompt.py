@@ -1,8 +1,13 @@
 import json
+import os
 
 
-# Load field descriptions from JSON file
-with open("field_descriptions.json", "r", encoding="utf-8") as f:
+# Load field descriptions from the JSON file sitting alongside this module,
+# regardless of the caller's working directory.
+_FIELD_DESCRIPTIONS_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "field_descriptions.json"
+)
+with open(_FIELD_DESCRIPTIONS_PATH, "r", encoding="utf-8") as f:
     field_descriptions_details = json.load(f)
 
 # Fields extracted once and shared across the entire agreement
@@ -100,35 +105,30 @@ def _format_signature_blocks(blocks):
     """Render the clustered signature blocks as a deterministic enumeration.
 
     Each block represents one party. The LLM must produce exactly one entry
-    in `signatures` per non-excluded block, in order, using the contract text
-    near the listed lines to determine the party role/name.
+    in `signatures` per block listed, in order, using the contract text near
+    the listed lines to determine the party role/name.
+
+    Excluded blocks (SoundExchange/LOD/audit-report context) are filtered out
+    before rendering — they don't reach the prompt at all, so the LLM never
+    sees them and can't accidentally include them.
     """
-    if not blocks:
+    active = [b for b in blocks if not b["excluded"]]
+    if not active:
         return "\nDETECTED SIGNATURE BLOCKS: none found.\n"
 
-    active = [b for b in blocks if not b["excluded"]]
-    excluded = [b for b in blocks if b["excluded"]]
     signed_count = sum(1 for b in active if b["signed"])
-
     parts = [
         "",
-        f"DETECTED SIGNATURE BLOCKS ({len(blocks)} total — {len(active)} active "
-        f"[{signed_count} signed, {len(active) - signed_count} unsigned], "
-        f"{len(excluded)} excluded). Emit one entry in `signatures` per ACTIVE block "
-        f"in the order shown; skip excluded blocks.",
+        f"DETECTED SIGNATURE BLOCKS ({len(active)} total — {signed_count} signed, "
+        f"{len(active) - signed_count} unsigned). Emit one entry in `signatures` "
+        f"per block below, in the order shown.",
         "",
     ]
-    for i, b in enumerate(blocks, 1):
+    for i, b in enumerate(active, 1):
         loc = _format_line_range(b["line_range"])
         loc_part = f"  {loc}" if loc else ""
-        if b["excluded"]:
-            parts.append(f"[{i}] EXCLUDED (SoundExchange/LOD context — SKIP)  "
-                         f"page {b['page']}  x={b['x']}{loc_part}")
-        else:
-            verdict = "SIGNED" if b["signed"] else "UNSIGNED"
-            sig = "yes" if b["has_signature_detection"] else "no"
-            parts.append(f"[{i}] ACTIVE  page {b['page']}  x={b['x']}{loc_part}  "
-                         f"| verdict: {verdict}  | wet/digital signature: {sig}")
+        verdict = "SIGNED" if b["signed"] else "UNSIGNED"
+        parts.append(f"[{i}] page {b['page']}  x={b['x']}{loc_part}  | verdict: {verdict}")
         for f in b["fields"]:
             anchor = "*" if f["is_signed_signal"] else " "
             value_repr = f'"{f["value"]}"' if f["filled"] else "[BLANK]"
@@ -191,10 +191,8 @@ def build_extraction_prompt(line_index, signature_blocks=None):
     signature_blocks_block = _format_signature_blocks(signature_blocks or [])
     array_fields_list = ", ".join(f'"{f}"' for f in sorted(ARRAY_FIELDS)) or "none"
 
-    producer_example_1 = _build_producer_example("<First Producer Name>")
-    producer_example_2 = _build_producer_example("<Second Producer Name>")
-    song_example_1 = _build_song_example("<Song Title 1>")
-    song_example_2 = _build_song_example("<Song Title 2>")
+    producer_example = _build_producer_example("<Producer Name>")
+    song_example = _build_song_example("<Song Title>")
 
     return f"""Extract structured data from a music royalty contract.
 
@@ -247,7 +245,7 @@ PHASE 3 — UNIVERSAL FIELDS (once for the whole agreement)
 
 SIGNATURES: A deterministic enumeration of signature blocks is provided in the
 DETECTED SIGNATURE BLOCKS section below. Do NOT enumerate blocks yourself.
-For each ACTIVE block, emit exactly one entry in "signatures" in the order shown:
+For each block listed, emit exactly one entry in "signatures" in the order shown:
   - "value": the party's entity name (e.g. "Cheeze Beatz, LLC", "Maybach Music Group, LLC")
     or person's full name (e.g. "Darryl McCorkell"). Read the contract text near the
     block's listed lines AND the typed name on/near the signature line.
@@ -256,8 +254,7 @@ For each ACTIVE block, emit exactly one entry in "signatures" in the order shown
     when no specific name is visible. Never return "not found" — use the best label available.
   - "signed": copy the listed mechanical verdict exactly — true for SIGNED, false for UNSIGNED.
   - "lines": the block's listed line range as integers.
-Skip EXCLUDED blocks entirely (no entry). "Execution Status" is computed automatically —
-set its value to "TBD".
+"Execution Status" is computed automatically — set its value to "TBD".
 
 PHASE 4 — PRODUCER-SPECIFIC FIELDS (for EACH producer)
 {producer_field_text}
@@ -296,16 +293,15 @@ OUTPUT FORMAT
   "Label": {{"value": "...", "lines": [1]}},
   "Organization Counting Units": {{"value": "...", "lines": [1]}},
   "producers": [
-{producer_example_1},
-{producer_example_2}
+{producer_example}
   ],
   "songs": [
-{song_example_1},
-{song_example_2}
+{song_example}
   ]
 }}
 
-One producer entry per producer identified. One song entry per song identified. No placeholders.
+The example above shows ONE producer and ONE song entry — emit one entry per producer
+identified and one per song identified, following the same schema. No placeholders.
 
 CONTRACT TEXT
 -------------
