@@ -279,6 +279,11 @@ def extract_field_information(line_index, annotations=None):
     print(f"[DEBUG] Clustered {len(blocks)} signature blocks "
           f"({len(active)} active, {sum(1 for b in active if b['signed'])} signed, "
           f"{len(blocks) - len(active)} excluded)")
+    for i, b in enumerate(blocks, 1):
+        tag = "EXCLUDED" if b["excluded"] else ("SIGNED" if b["signed"] else "UNSIGNED")
+        fields_summary = ", ".join(f'{f["key"]}={f["value"]!r}' for f in b["fields"]) or "(no form fields)"
+        print(f"[BLOCK {i}] page={b['page']} x={b['x']} lines={b['line_range']} "
+              f"sig_detected={b['has_signature_detection']} -> {tag} | {fields_summary}")
 
     prompt = build_extraction_prompt(line_index, blocks)
 
