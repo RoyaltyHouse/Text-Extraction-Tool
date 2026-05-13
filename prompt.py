@@ -248,9 +248,12 @@ PHASE 3 — UNIVERSAL FIELDS (once for the whole agreement)
 SIGNATURES: A deterministic enumeration of signature blocks is provided in the
 DETECTED SIGNATURE BLOCKS section below. Do NOT enumerate blocks yourself.
 For each ACTIVE block, emit exactly one entry in "signatures" in the order shown:
-  - "value": the party role or name (e.g. "Producer", "Label", "John Smith, CEO").
-    Determine this by reading the contract text near the block's listed lines —
-    the form-field key (e.g. "By:") does not name the party on its own.
+  - "value": the party's entity name (e.g. "Cheeze Beatz, LLC", "Maybach Music Group, LLC")
+    or person's full name (e.g. "Darryl McCorkell"). Read the contract text near the
+    block's listed lines AND the typed name on/near the signature line.
+    DO NOT use "An Authorized Signatory" — that is the signer's capacity description,
+    not their identity. Fall back to a generic role ("Producer", "Label", "Company") only
+    when no specific name is visible. Never return "not found" — use the best label available.
   - "signed": copy the listed mechanical verdict exactly — true for SIGNED, false for UNSIGNED.
   - "lines": the block's listed line range as integers.
 Skip EXCLUDED blocks entirely (no entry). "Execution Status" is computed automatically —

@@ -12,12 +12,28 @@ mechanical FX/PX/NX verdict, which removes enumeration ambiguity from the LLM.
 import re
 
 
-# Form keys whose filled VALUE indicates that party signed.
-_SIGNED_KEY_WORDS = {"by", "name", "signature", "signed", "signatory", "sign"}
+# Canonical form keys (normalized) whose filled VALUE indicates a party signed.
+# EXACT match only — "by" matches but "Document created by" does NOT. This is
+# critical: DocuSign / Adobe Sign audit-trail fields ("Signer", "Document
+# created by", "Email viewed by", "Signature Date", ...) all contain words
+# from this set, and word-subset matching would inflate every signed PDF with
+# phantom blocks. The cost of strict matching is missing the rare contract
+# that uses an unconventional key like "Signed By:" — accept that tradeoff.
+_SIGNED_KEYS = {
+    "by",
+    "name",
+    "print name",
+    "printed name",
+    "signature",
+    "signed",
+    "sign",
+    "signatory",
+    "authorized signatory",
+}
 
-# Form keys that anchor a signature block but whose filled value doesn't imply
-# a signature (e.g. a typed Date or Title alone doesn't mean the party signed).
-_META_KEY_WORDS = {"title", "date", "its"}
+# Keys that anchor a signature block but whose filled value alone doesn't
+# imply signing (a typed Date or Title without a name/signature isn't signed).
+_META_KEYS = {"title", "date", "its"}
 
 _NORM_KEY_RE = re.compile(r"[^a-z ]")
 _EXCLUDED_RE = re.compile(r"\b(soundexchange|letter of direction|lod)\b", re.IGNORECASE)
@@ -34,12 +50,12 @@ def _norm_key(s):
 
 def _classify_key(key):
     """Return 'signed_signal', 'meta', or None for a form-field key."""
-    words = set(_norm_key(key).split())
-    if not words:
+    norm = _norm_key(key)
+    if not norm:
         return None
-    if words & _SIGNED_KEY_WORDS:
+    if norm in _SIGNED_KEYS:
         return "signed_signal"
-    if words & _META_KEY_WORDS:
+    if norm in _META_KEYS:
         return "meta"
     return None
 
