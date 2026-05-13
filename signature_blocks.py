@@ -56,7 +56,6 @@ _EXCLUDED_RE = re.compile(
 # Textract coords are 0.0-1.0 normalized to page dimensions.
 _Y_GAP = 0.05   # vertical gap between adjacent items in one block
 _X_GAP = 0.20   # horizontal gap between adjacent items in one column
-_CONTEXT_RADIUS = 10  # lines around the block to scan for exclusion patterns
 
 
 def _norm_key(s):
@@ -108,15 +107,21 @@ def _build_candidates(annotations):
     return candidates
 
 
-def _excluded_by_context(page, line_range, line_index):
-    """True if SoundExchange/LOD wording appears in nearby contract text."""
-    lo, hi = line_range
-    if lo is None:
+def _excluded_by_context(page, line_index):
+    """True if exclusion wording appears anywhere on the same page.
+
+    Scans the full page (not a ±N line window) because the relevant header —
+    "Form Producer Letter of Direction", "Final Audit Report", etc. — typically
+    sits at the top of the page while the signature block sits at the bottom,
+    well outside any reasonable line window. Same-page scoping prevents leakage
+    across page boundaries.
+    """
+    if page is None:
         return False
     text = " ".join(
-        line_index[ln]["text"]
-        for ln in range(max(1, lo - _CONTEXT_RADIUS), hi + _CONTEXT_RADIUS + 1)
-        if ln in line_index and line_index[ln].get("page") == page
+        entry["text"]
+        for entry in line_index.values()
+        if entry.get("page") == page
     )
     return bool(_EXCLUDED_RE.search(text))
 
@@ -160,7 +165,7 @@ def _build_block(cluster, line_index):
         "fields": fields,
         "has_signature_detection": has_signature_detection,
         "signed": has_signature_detection,
-        "excluded": _excluded_by_context(cluster[0]["page"], line_range, line_index),
+        "excluded": _excluded_by_context(cluster[0]["page"], line_index),
     }
 
 
