@@ -1,6 +1,7 @@
 from collections import OrderedDict
 from dotenv import load_dotenv
 from prompt import build_extraction_prompt, ARRAY_FIELDS
+from signature_blocks import cluster_signature_blocks
 import os
 import json
 from openai import OpenAI
@@ -215,12 +216,12 @@ def _page_from_lines(line_nums, line_index):
 
 
 def _derive_execution_status(signatures):
-    """Compute FX/PX/NX from the signatures array — no GPT involvement.
+    """Compute FX/PX/NX from a reconciled signatures list.
 
-    GPT populates signatures[].signed but its derived Execution Status verdict
-    is unreliable. Overwrite it with the mechanical count.
+    Empty list means no signature blocks were detected — NX.
+    Non-list (defensive) returns None so the caller doesn't override.
     """
-    if not signatures or not isinstance(signatures, list):
+    if not isinstance(signatures, list):
         return None
     signed = sum(1 for s in signatures if s.get("signed") is True)
     total = len(signatures)
@@ -229,6 +230,32 @@ def _derive_execution_status(signatures):
     if signed == total:
         return "FX"
     return "PX"
+
+
+def _reconcile_signatures(blocks, gpt_signatures):
+    """Build the authoritative signatures[] from clusters + GPT role labels.
+
+    The cluster output is the source of truth for both the count and the
+    signed/unsigned verdict per party. GPT contributes only the human-readable
+    role/name for each block via the labeling task. Excluded blocks
+    (SoundExchange/LOD) are dropped — they don't count toward execution status.
+    """
+    active = [b for b in blocks if not b["excluded"]]
+    if not isinstance(gpt_signatures, list):
+        gpt_signatures = []
+
+    out = []
+    for i, block in enumerate(active):
+        gpt_entry = gpt_signatures[i] if i < len(gpt_signatures) and isinstance(gpt_signatures[i], dict) else {}
+        role = gpt_entry.get("value")
+        if not isinstance(role, str) or not role.strip():
+            role = f"Party {i + 1}"
+
+        lo, hi = block["line_range"]
+        lines = list(range(lo, hi + 1)) if lo is not None and hi is not None else []
+
+        out.append({"value": role.strip(), "signed": block["signed"], "lines": lines})
+    return out
 
 
 # ── GPT interaction ──────────────────────────────────────────────────────────
@@ -247,16 +274,27 @@ def _strip_markdown_fences(content):
 
 def extract_field_information(line_index, annotations=None):
     """Single-pass extraction with line-number-based coordinate resolution."""
-    prompt = build_extraction_prompt(line_index, annotations or [])
+    blocks = cluster_signature_blocks(annotations or [], line_index)
+    active = [b for b in blocks if not b["excluded"]]
+    print(f"[DEBUG] Clustered {len(blocks)} signature blocks "
+          f"({len(active)} active, {sum(1 for b in active if b['signed'])} signed, "
+          f"{len(blocks) - len(active)} excluded)")
+    for i, b in enumerate(blocks, 1):
+        tag = "EXCLUDED" if b["excluded"] else ("SIGNED" if b["signed"] else "UNSIGNED")
+        fields_summary = ", ".join(f'{f["key"]}={f["value"]!r}' for f in b["fields"]) or "(no form fields)"
+        print(f"[BLOCK {i}] page={b['page']} x={b['x']} lines={b['line_range']} "
+              f"sig_detected={b['has_signature_detection']} -> {tag} | {fields_summary}")
+
+    prompt = build_extraction_prompt(line_index, blocks)
 
     response = client.chat.completions.create(
-        model="gpt-4o",
+        model="gpt-5.4-mini",
         messages=[
             {"role": "system", "content": "You are an intelligent document extraction assistant."},
             {"role": "user", "content": prompt},
         ],
-        temperature=0.2,
-        max_tokens=16384,
+        max_completion_tokens=16384,
+        reasoning_effort="low",
     )
 
     choice = response.choices[0]
@@ -273,11 +311,13 @@ def extract_field_information(line_index, annotations=None):
         print(f"[ERROR] Raw content (first 500 chars): {content[:500]}")
         return {"error": f"Failed to parse extraction results: {e}"}
 
-    # Override GPT's Execution Status verdict with a mechanical count from
-    # the signatures array — GPT populates signed/unsigned per party but
-    # its derived FX/PX/NX is unreliable.
-    sigs = extracted_fields.get("signatures", [])
-    computed_status = _derive_execution_status(sigs)
+    # Replace GPT's signatures[] with the cluster-derived list (GPT keeps the
+    # role labels via order; we keep the deterministic count + signed verdict).
+    # Execution Status is then derived from the reconciled list.
+    extracted_fields["signatures"] = _reconcile_signatures(
+        blocks, extracted_fields.get("signatures")
+    )
+    computed_status = _derive_execution_status(extracted_fields["signatures"])
     if computed_status is not None:
         es = extracted_fields.get("Execution Status")
         if isinstance(es, dict):

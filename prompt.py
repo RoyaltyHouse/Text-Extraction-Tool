@@ -1,8 +1,13 @@
 import json
+import os
 
 
-# Load field descriptions from JSON file
-with open("field_descriptions.json", "r", encoding="utf-8") as f:
+# Load field descriptions from the JSON file sitting alongside this module,
+# regardless of the caller's working directory.
+_FIELD_DESCRIPTIONS_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "field_descriptions.json"
+)
+with open(_FIELD_DESCRIPTIONS_PATH, "r", encoding="utf-8") as f:
     field_descriptions_details = json.load(f)
 
 # Fields extracted once and shared across the entire agreement
@@ -89,39 +94,46 @@ def _format_contract_text(line_index):
     return "\n".join(parts)
 
 
-def _format_annotations(annotations):
-    """Render Textract FORM/SIGNATURE evidence as a structured block.
-
-    Independent of the OCR'd text, which misses wet/digital signatures entirely.
-    Each entry carries an x position (0.00=left, 1.00=right) so multi-column
-    signature blocks can be attributed to the right party.
-    """
-    if not annotations:
+def _format_line_range(line_range):
+    lo, hi = line_range
+    if lo is None:
         return ""
+    return f"L{lo}" if lo == hi else f"L{lo}-L{hi}"
 
-    by_page = {}
-    for ann in annotations:
-        by_page.setdefault(ann["page"], []).append(ann)
 
+def _format_signature_blocks(blocks):
+    """Render the clustered signature blocks as a deterministic enumeration.
+
+    Each block represents one party. The LLM must produce exactly one entry
+    in `signatures` per block listed, in order, using the contract text near
+    the listed lines to determine the party role/name.
+
+    Excluded blocks (SoundExchange/LOD/audit-report context) are filtered out
+    before rendering — they don't reach the prompt at all, so the LLM never
+    sees them and can't accidentally include them.
+    """
+    active = [b for b in blocks if not b["excluded"]]
+    if not active:
+        return "\nDETECTED SIGNATURE BLOCKS: none found.\n"
+
+    signed_count = sum(1 for b in active if b["signed"])
     parts = [
         "",
-        "TEXTRACT EVIDENCE — ground truth for the signatures array.",
-        "A SIGNATURE detection or non-empty By:/Name: value at a party's x position",
-        "means that party signed. Match each entry to the party at a similar x.",
+        f"DETECTED SIGNATURE BLOCKS ({len(active)} total — {signed_count} signed, "
+        f"{len(active) - signed_count} unsigned). Emit one entry in `signatures` "
+        f"per block below, in the order shown.",
         "",
     ]
-    for page in sorted(by_page.keys()):
-        parts.append(f"Page {page}:")
-        for ann in by_page[page]:
-            near = f" near [L{ann['near_line']}]" if ann.get("near_line") else ""
-            left = ann.get("left")
-            pos = f" (x={left:.2f})" if left is not None else ""
-            if ann["type"] == "signature":
-                parts.append(f"  - SIGNATURE detected{near}{pos} (confidence {ann['confidence']}%)")
-            else:
-                key = ann["key"]
-                val = ann["value"] if ann["value"] else "[BLANK]"
-                parts.append(f'  - FORM FIELD{near}{pos}: "{key}" => "{val}"')
+    for i, b in enumerate(active, 1):
+        loc = _format_line_range(b["line_range"])
+        loc_part = f"  {loc}" if loc else ""
+        verdict = "SIGNED" if b["signed"] else "UNSIGNED"
+        parts.append(f"[{i}] page {b['page']}  x={b['x']}{loc_part}  | verdict: {verdict}")
+        for f in b["fields"]:
+            anchor = "*" if f["is_signed_signal"] else " "
+            value_repr = f'"{f["value"]}"' if f["filled"] else "[BLANK]"
+            parts.append(f"    {anchor} {f['key']:<10} {value_repr}")
+        parts.append("")
     return "\n".join(parts)
 
 
@@ -155,13 +167,14 @@ def _build_song_example(placeholder_title, indent="    "):
     return "\n".join(lines)
 
 
-def build_extraction_prompt(line_index, annotations=None):
+def build_extraction_prompt(line_index, signature_blocks=None):
     """Build a single-pass extraction prompt for GPT.
 
     Args:
         line_index: dict of {line_num: {page, text, words}} from Textract
-        annotations: list of structural annotations (signatures, form fields)
-            from Textract FORMS+SIGNATURES analysis
+        signature_blocks: list of per-party blocks from cluster_signature_blocks().
+            The LLM treats this as a deterministic enumeration — one signatures[]
+            entry per active block, no enumeration of its own.
     """
     universal_field_text = _format_field_list(
         [f for f in UNIVERSAL_FIELDS if f in field_descriptions_details]
@@ -175,13 +188,11 @@ def build_extraction_prompt(line_index, annotations=None):
         f'"{f}"' for f in SONG_FIELDS if f in field_descriptions_details
     )
     contract_text = _format_contract_text(line_index)
-    annotations_block = _format_annotations(annotations or [])
+    signature_blocks_block = _format_signature_blocks(signature_blocks or [])
     array_fields_list = ", ".join(f'"{f}"' for f in sorted(ARRAY_FIELDS)) or "none"
 
-    producer_example_1 = _build_producer_example("<First Producer Name>")
-    producer_example_2 = _build_producer_example("<Second Producer Name>")
-    song_example_1 = _build_song_example("<Song Title 1>")
-    song_example_2 = _build_song_example("<Song Title 2>")
+    producer_example = _build_producer_example("<Producer Name>")
+    song_example = _build_song_example("<Song Title>")
 
     return f"""Extract structured data from a music royalty contract.
 
@@ -232,11 +243,18 @@ Rules:
 PHASE 3 — UNIVERSAL FIELDS (once for the whole agreement)
 {universal_field_text}
 
-SIGNATURES: Populate "signatures" by scanning the signature block. Identify each party,
-whether they signed, and the line(s) of their block. Anchor on keyword cues — "By:",
-"Name:", "Date:", "Signature", "Signed", "Authorized Signatory" — and group nearby Name +
-Signature (+ Date) fields into one block per party. EXCLUDE any SoundExchange LOD blocks.
-"Execution Status" is computed automatically from this array — set its value to "TBD".
+SIGNATURES: A deterministic enumeration of signature blocks is provided in the
+DETECTED SIGNATURE BLOCKS section below. Do NOT enumerate blocks yourself.
+For each block listed, emit exactly one entry in "signatures" in the order shown:
+  - "value": the party's entity name (e.g. "Cheeze Beatz, LLC", "Maybach Music Group, LLC")
+    or person's full name (e.g. "Darryl McCorkell"). Read the contract text near the
+    block's listed lines AND the typed name on/near the signature line.
+    DO NOT use "An Authorized Signatory" — that is the signer's capacity description,
+    not their identity. Fall back to a generic role ("Producer", "Label", "Company") only
+    when no specific name is visible. Never return "not found" — use the best label available.
+  - "signed": copy the listed mechanical verdict exactly — true for SIGNED, false for UNSIGNED.
+  - "lines": the block's listed line range as integers.
+"Execution Status" is computed automatically — set its value to "TBD".
 
 PHASE 4 — PRODUCER-SPECIFIC FIELDS (for EACH producer)
 {producer_field_text}
@@ -275,21 +293,20 @@ OUTPUT FORMAT
   "Label": {{"value": "...", "lines": [1]}},
   "Organization Counting Units": {{"value": "...", "lines": [1]}},
   "producers": [
-{producer_example_1},
-{producer_example_2}
+{producer_example}
   ],
   "songs": [
-{song_example_1},
-{song_example_2}
+{song_example}
   ]
 }}
 
-One producer entry per producer identified. One song entry per song identified. No placeholders.
+The example above shows ONE producer and ONE song entry — emit one entry per producer
+identified and one per song identified, following the same schema. No placeholders.
 
 CONTRACT TEXT
 -------------
 \"\"\"
 {contract_text}
 \"\"\"
-{annotations_block}
+{signature_blocks_block}
 """.strip()
