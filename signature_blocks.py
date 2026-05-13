@@ -12,13 +12,17 @@ mechanical FX/PX/NX verdict, which removes enumeration ambiguity from the LLM.
 import re
 
 
-# Canonical form keys (normalized) whose filled VALUE indicates a party signed.
-# EXACT match only — "by" matches but "Document created by" does NOT. This is
-# critical: DocuSign / Adobe Sign audit-trail fields ("Signer", "Document
-# created by", "Email viewed by", "Signature Date", ...) all contain words
-# from this set, and word-subset matching would inflate every signed PDF with
-# phantom blocks. The cost of strict matching is missing the rare contract
-# that uses an unconventional key like "Signed By:" — accept that tradeoff.
+# Canonical form keys (normalized) that mark a cluster as a real signature
+# block region. EXACT match only — "by" matches but "Document created by"
+# does NOT, which keeps DocuSign / Adobe Sign audit-trail fields ("Signer",
+# "Document created by", "Email viewed by", "Signature Date", ...) from
+# creating phantom blocks via word-subset matches.
+#
+# Note: a filled value in one of these fields does NOT by itself imply the
+# party signed — Textract often spatially pairs typed identifiers below blank
+# signature lines as the form field's value (e.g. "By: ____ / Aaron Lockhart"
+# becomes {key: "By:", value: "Aaron Lockhart"} even though the line is blank).
+# The `signed` verdict requires a Textract SIGNATURE annotation in the block.
 _SIGNED_KEYS = {
     "by",
     "name",
@@ -110,7 +114,6 @@ def _build_block(cluster, line_index):
     """Materialize one cluster into a block dict, or None if not a real sig block."""
     fields = []
     has_signature_detection = False
-    has_signed_value = False
     has_signed_anchor = False
 
     for it in cluster:
@@ -128,8 +131,6 @@ def _build_block(cluster, line_index):
         })
         if is_signed_key:
             has_signed_anchor = True
-            if value:
-                has_signed_value = True
 
     # A cluster of only meta fields (e.g. a stray "Date:" in a header) isn't a
     # real signature block. Require either a signed-anchor field or a Textract
@@ -147,7 +148,7 @@ def _build_block(cluster, line_index):
         "line_range": line_range,
         "fields": fields,
         "has_signature_detection": has_signature_detection,
-        "signed": has_signature_detection or has_signed_value,
+        "signed": has_signature_detection,
         "excluded": _excluded_by_context(cluster[0]["page"], line_range, line_index),
     }
 
