@@ -289,7 +289,7 @@ def extract_field_information(line_index, annotations=None):
             {"role": "user", "content": prompt},
         ],
         max_completion_tokens=16384,
-        reasoning_effort="minimal",
+        reasoning_effort="low",
     )
 
     choice = response.choices[0]
