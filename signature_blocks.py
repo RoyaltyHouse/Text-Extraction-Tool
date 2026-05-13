@@ -40,7 +40,18 @@ _SIGNED_KEYS = {
 _META_KEYS = {"title", "date", "its"}
 
 _NORM_KEY_RE = re.compile(r"[^a-z ]")
-_EXCLUDED_RE = re.compile(r"\b(soundexchange|letter of direction|lod)\b", re.IGNORECASE)
+
+# Context markers that indicate a cluster belongs to a non-execution section:
+#   - SoundExchange / LOD — third-party payment instructions, not a party signature
+#   - "Final Audit Report" — DocuSign trailing audit page, whose metadata table
+#     contains a "By: <document creator>" field that Textract picks up as a
+#     form field. Without this exclusion, the creator (often a lawyer like
+#     "Bernie Lawrence-Watkins (bernie@blwapc.com)") becomes a phantom
+#     unsigned block and tips FX docs to PX.
+_EXCLUDED_RE = re.compile(
+    r"\b(soundexchange|letter of direction|lod|final audit report)\b",
+    re.IGNORECASE,
+)
 
 # Textract coords are 0.0-1.0 normalized to page dimensions.
 _Y_GAP = 0.05   # vertical gap between adjacent items in one block
