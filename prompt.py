@@ -23,6 +23,7 @@ UNIVERSAL_FIELDS = [
     "Distributor",
     "Label",
     "Organization Counting Units",
+    "Advance Mapping",
 ]
 
 # Derived from field_descriptions.json — any field with "is_array": true
@@ -256,24 +257,79 @@ For each block listed, emit exactly one entry in "signatures" in the order shown
   - "lines": the block's listed line range as integers.
 "Execution Status" is computed automatically — set its value to "TBD".
 
-PHASE 4 — PRODUCER-SPECIFIC FIELDS (for EACH producer)
+PHASE 4 — ADVANCE MAPPING (FILL BEFORE PRODUCER/SONG ADVANCES)
+Build `Advance Mapping` as the SINGLE SOURCE OF TRUTH for every advance amount in
+the document. The per-producer and per-song `Producer Advance Legal Recoupment`
+scalars in Phases 5 and 6 are derived FROM this mapping — they must be consistent
+with `Advance Mapping.entries`. Do not invent advance amounts in the producer or
+song entries that do not appear in the mapping.
+
+Recognize these five patterns (the document may use any of them):
+
+  (1) IN-TEXT (paragraph form). Advances stated inside body paragraphs under
+      sections like "Recording Costs", "Compensation", "Producer Advance",
+      "Advance". The amount can be tied to a producer, a song, both, or all.
+      WATCH: this is the highest-miss case. If a paragraph names BOTH a producer
+      AND a song near a dollar figure, emit a `per_producer_per_song` entry —
+      do NOT collapse to aggregate.
+
+  (2) SCHEDULE / TABLE. Listed in "Schedule A", "Schedule 1", or a labeled
+      table, one row per song. Use `per_song` (or `per_producer_per_song` if
+      the table also breaks out by producer).
+
+  (3) PER-MASTER. "$X per master recording" or "$X for each Master". Set
+      `structure = "per_master"`, `aggregate_total = "$X"` (the per-master
+      rate), and emit ONE entry per song with value = $X.
+
+  (4) AGGREGATE-ONLY. One total advance with no per-song or per-producer
+      breakdown. Set `structure = "aggregate"`, `aggregate_total = "$X"`, and
+      emit ONE entry with `producer: "all", song: "all", value: "$X"`.
+
+  (5) NONE. No advance language anywhere. Set `structure = "none"`,
+      `aggregate_total = "not found"`, `entries = []`.
+
+Equal-split case: if the document states the advance is "to be split equally
+among producers", set `structure = "equal_split"`, `aggregate_total` to the
+stated total, `split_note` to the literal phrase from the document, and emit
+one entry per producer with value = aggregate / producer_count.
+
+Multi-producer per-share case: if distinct amounts are stated per producer
+(e.g. "$6,666.67 payable to Producer A and $3,333.34 payable to Producer B"),
+use `per_producer` (or `per_producer_per_song` if also broken out by song).
+Emit one entry per (producer, song) pair with that producer's stated share.
+
+PHASE 5 — PRODUCER-SPECIFIC FIELDS (for EACH producer)
 {producer_field_text}
 
 - Extract from the section pertaining to THAT producer only
 - If a term applies to all producers, DUPLICATE it into every entry
-- Missing: {{"value": "not found", "lines": []}}
+- `Producer Advance Legal Recoupment` is PROJECTED from `Advance Mapping`:
+    • If the mapping has a single entry for this producer → use that value.
+    • If the mapping has multiple per-song entries for this producer → use the
+      SUM of that producer's entries.
+    • If `equal_split` → use aggregate / producer_count for every producer.
+    • If `aggregate` with no per-producer split → copy the aggregate total.
+    • If `none` → "not found".
+- Missing other fields: {{"value": "not found", "lines": []}}
 
-PHASE 5 — SONG-SPECIFIC FIELDS (for EACH song)
+PHASE 6 — SONG-SPECIFIC FIELDS (for EACH song)
 Fields: {song_field_names}
-(Same definitions as Phase 4)
+(Same definitions as Phase 5)
 
 - Extract from the section for THAT song only (per-track schedule, subsection, table row)
 - For "Producer Royalty Points": use the royalty subsection, NOT the Bumps subsection. Include per-producer breakdown if stated alongside the aggregate rate.
 - For "Type of Royalty": use the type of royalty subsection, NOT the royalty points or bumps subsection.
 - "is_rate_explicit": true if explicitly stated for this song; false if from a blanket clause
-- "advance_scope": set to "agreement" if ONE advance covers all songs (no per-track breakdown); set to "song" if each track has its own distinct advance amount stated explicitly. Always duplicate the advance value into every song entry regardless.
-- Blanket values: DUPLICATE into every song entry
-- Missing: {{"value": "not found", "lines": []}}
+- "advance_scope": set to "agreement" if ONE advance covers all songs (no per-track breakdown); set to "song" if each track has its own distinct advance amount stated explicitly. Must be consistent with `Advance Mapping.structure` (per_song / per_master / per_producer_per_song → "song"; aggregate / equal_split / per_producer → "agreement"; none → "agreement").
+- `Producer Advance Legal Recoupment` is PROJECTED from `Advance Mapping`:
+    • If the mapping has a single entry for this song → use that value.
+    • If the mapping has multiple per-producer entries for this song → use the
+      SUM across producers for that song.
+    • If `aggregate` / `equal_split` / `per_producer` (no per-song breakdown) →
+      copy the aggregate total into every song.
+    • If `none` → "not found".
+- Other blanket values: DUPLICATE into every song entry
+- Missing other fields: {{"value": "not found", "lines": []}}
 
 OUTPUT FORMAT
 -------------
@@ -292,6 +348,15 @@ OUTPUT FORMAT
   "Distributor": {{"value": "...", "lines": [1]}},
   "Label": {{"value": "...", "lines": [1]}},
   "Organization Counting Units": {{"value": "...", "lines": [1]}},
+  "Advance Mapping": {{
+    "structure": "per_producer_per_song|per_song|per_producer|per_master|aggregate|equal_split|none",
+    "aggregate_total": "$10,000",
+    "split_note": "to be split equally among producers",
+    "entries": [
+      {{"producer": "<Producer Name or 'all'>", "song": "<Song Title or 'all'>", "value": "$5,000", "lines": [42]}}
+    ],
+    "lines": [40, 41, 42]
+  }},
   "producers": [
 {producer_example}
   ],
