@@ -327,13 +327,26 @@ def extract_field_information(line_index, annotations=None):
 
     if line_index:
         try:
-            _apply_coords(extracted_fields, line_index, skip_keys={"producers", "songs"})
+            _apply_coords(
+                extracted_fields,
+                line_index,
+                skip_keys={"producers", "songs", "Advance Mapping"},
+            )
 
             for producer in extracted_fields.get("producers", []):
                 _apply_coords(producer, line_index, skip_keys={"producer_name"})
 
             for song in extracted_fields.get("songs", []):
                 _apply_coords(song, line_index, skip_keys={"song_title", "is_rate_explicit", "advance_scope"})
+
+            # Advance Mapping is a structured object; resolve coords for each
+            # nested entry independently. Each entry has {value, lines} so it
+            # works directly with _resolve_single_field.
+            mapping = extracted_fields.get("Advance Mapping")
+            if isinstance(mapping, dict):
+                for entry in mapping.get("entries", []) or []:
+                    if isinstance(entry, dict):
+                        _resolve_single_field(entry, line_index)
         except Exception as e:
             print(f"[WARNING] Coordinate resolution failed: {e}")
 
