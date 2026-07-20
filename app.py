@@ -2,7 +2,6 @@ import awsgi
 from flask import Flask, request, jsonify
 import json
 import boto3
-import time
 import requests
 import urllib.parse
 import re
@@ -11,7 +10,6 @@ import uuid
 from extractor import extract_text_from_pdf, textract_lines_by_page_from_file, textract_text_image_by_image
 from flask_cors import CORS
 import os
-from botocore.exceptions import NoCredentialsError
 import job_store
 
 app = Flask(__name__)
@@ -35,13 +33,11 @@ LAMBDA_FUNCTION_ARN = os.getenv(
 )
 
 s3 = boto3.client('s3')
-textract = boto3.client('textract')
 lambda_client = boto3.client('lambda')
 
 JSON_FILE = "field_descriptions.json"
 
 ALLOWED_EXTS = {"pdf"}
-ALLOWED_MIME = {"application/pdf"}
 
 
 @app.route('/extract', methods=['POST'])

@@ -1,13 +1,12 @@
 # extractor.py
 from pypdf import PdfReader
 from gpt_extractor import extract_field_information
-import json , os, tempfile, time
+import json, os, tempfile, time
 import boto3
-import time
 
 
 # S3 configuration
-S3_BUCKET = os.getenv("BUCKET_NAME")  # Replace with your actual bucket name
+S3_BUCKET = os.getenv("BUCKET_NAME")
 s3 = boto3.client('s3')
 textract = boto3.client('textract')
 
@@ -33,12 +32,6 @@ def textract_text_image_by_image(file):
     if not line_index:
         return []
     return [entry["text"] for entry in line_index.values()]
-
-
-def extract_text_from_word(path):
-    print("Extracting text from Word document:", path)
-    return path
-
 
 
 def _block_bbox(block):
