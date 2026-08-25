@@ -30,6 +30,9 @@
     "Effective Date": {
         "description": "Extract the **Effective Date** from the first paragraph.\n\nIf multiple dates on page 1, select the one labeled \"Effective as of...\" or \"Effective Date:\".\n\nReturn ONLY the date string."
     },
+    "Contract Term": {
+        "description": "Extract the **Contract Term** — how long the agreement stays in effect.\n\nLook for duration or expiration language such as: \"for a term of...\", \"shall remain in effect for...\", \"for a period of...\", \"Initial Period\", \"Term of this Agreement\", \"expires on...\", \"expiration date\", \"until [date]\".\n\nIf the contract states an explicit end/expiration date, return that date (e.g. \"December 31, 2025\"). Otherwise return the duration phrase verbatim (e.g. \"two (2) years from the Effective Date\", \"twelve (12) months\").\n\nReturn ONLY the term or date value — not the surrounding sentence or section header. Do NOT confuse a perpetual rights grant (\"in perpetuity\", \"for the life of copyright\") with the agreement's term — that is a rights assignment, not a time-limited term. If no term or expiration is stated, return \"not found\"."
+    },
     "Distributor": {
         "description": "Extract the **Distributor** name.\n\nLook for: \"distributed by [Entity]\", \"released by [Entity]\", or \"[Entity], a division of [Parent]\".\n\nIf not explicitly stated, the Label and Distributor may be the same entity.\n\nReturn ONLY the entity name."
     },

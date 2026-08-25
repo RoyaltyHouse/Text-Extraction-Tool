@@ -31,9 +31,10 @@ A Flask-based API for extracting structured information from PDF documents (musi
    ```
 
 3. **Set up environment variables:**
-   - Create a `.env` file in the project root with your OpenAI API key:
+   - Create a `.env` file in the project root with your OpenRouter API key and default model:
      ```env
-     OPENAI_API_KEY2=your_openai_api_key_here
+     OPENROUTER_API_KEY=your_openrouter_api_key_here
+     OPENROUTER_DEFAULT_MODEL=openai/gpt-5.4-mini
      ```
 
 4. **Configure AWS S3:**
@@ -50,7 +51,8 @@ A Flask-based API for extracting structured information from PDF documents (musi
 1. **Use the Lambda layer** (`lambda-layer-final-working.zip`) that contains all dependencies
 2. **Upload the Lambda function code** (without local dependencies)
 3. **Add environment variables** in Lambda console:
-   - `OPENAI_API_KEY2`: Your OpenAI API key
+   - `OPENROUTER_API_KEY`: Your OpenRouter API key
+   - `OPENROUTER_DEFAULT_MODEL`: OpenRouter model slug (e.g. `openai/gpt-5.4-mini`)
 
 ## Running the App
 
@@ -124,7 +126,7 @@ The Flask server will start on `http://127.0.0.1:5000/` by default.
 
 ## Notes
 - Only PDF files are currently supported for extraction (images supported via Textract but without coordinate data).
-- Requires a valid OpenAI API key (`OPENAI_API_KEY2` environment variable).
+- Requires a valid OpenRouter API key (`OPENROUTER_API_KEY`) and a model slug (`OPENROUTER_DEFAULT_MODEL`).
 - Requires AWS Textract for OCR and bounding box extraction.
 - Files are temporarily stored in AWS S3 bucket for Textract processing.
 - Field descriptions are stored locally in `field_descriptions.json`.

@@ -14,7 +14,7 @@ import sys
 
 # Allow imports from the repo root regardless of where the script is invoked.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-os.environ.setdefault("OPENAI_API_KEY2", "sk-fake-for-import-only")
+os.environ.setdefault("OPENROUTER_API_KEY", "sk-fake-for-import-only")
 
 from signature_blocks import cluster_signature_blocks, _classify_key
 from gpt_extractor import _reconcile_signatures, _derive_execution_status

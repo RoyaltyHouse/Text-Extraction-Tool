@@ -8,7 +8,14 @@ from openai import OpenAI
 
 load_dotenv()
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY2"), timeout=180.0)
+client = OpenAI(
+    api_key=os.getenv("OPENROUTER_API_KEY"),
+    base_url="https://openrouter.ai/api/v1",
+    timeout=180.0,
+)
+
+# Model slug (OpenRouter format, e.g. "openai/gpt-5.4-mini"). Set on the Lambda.
+DEFAULT_MODEL = os.getenv("OPENROUTER_DEFAULT_MODEL", "openai/gpt-5.4-mini")
 
 # Characters that Textract and GPT represent differently.
 _CHAR_NORMALIZATIONS = str.maketrans({
@@ -288,13 +295,16 @@ def extract_field_information(line_index, annotations=None):
     prompt = build_extraction_prompt(line_index, blocks)
 
     response = client.chat.completions.create(
-        model="gpt-5.4-mini",
+        model=DEFAULT_MODEL,
         messages=[
             {"role": "system", "content": "You are an intelligent document extraction assistant."},
             {"role": "user", "content": prompt},
         ],
         max_completion_tokens=16384,
-        reasoning_effort="low",
+        # OpenRouter's native reasoning control (values: none…max). The OpenAI-style
+        # top-level `reasoning_effort` is not reliably honored through OpenRouter.
+        # On the GPT-5.6 family `effort` is a ceiling — zero reasoning on easy docs.
+        extra_body={"reasoning": {"effort": "low"}},
     )
 
     choice = response.choices[0]
