@@ -1,140 +1,95 @@
 # Contract Parser
 
-A Flask-based API for extracting structured information from PDF documents (music royalty contracts) using OpenAI GPT and custom field logic.
+Flask API on AWS Lambda that extracts structured fields from music royalty contracts. AWS Textract reads the PDF, an LLM (via OpenRouter) extracts the fields, and every value comes back with the page and bounding boxes needed to highlight it in the source document.
 
-## Features
-- Upload PDF files and extract structured text fields
-- Extract bounding box coordinates for each field (enables accurate PDF highlighting)
-- Extract from direct file upload or from a file URL (Google Drive supported)
-- Customizable field extraction using OpenAI GPT
-- S3-based file storage with AWS Textract integration
-- Supports both local development and AWS Lambda deployment
+## How it works
 
-## Requirements
-- Python 3.8+
-- OpenAI API key
-- AWS S3 bucket configured
+1. **OCR**: Textract (FORMS + SIGNATURES) returns numbered lines with word boxes, plus detected signatures and form key/value pairs, each pinned to its nearest line (`extractor.py`).
+2. **Signature blocks**: signature-related annotations are clustered by position into one block per signing party (`signature_blocks.py`). A block counts as signed only when Textract detected a signature in it. Blocks on SoundExchange / Letter of Direction pages or DocuSign audit pages are excluded.
+3. **Extraction**: one prompt (`prompt.py`) combines the extraction rules, the field descriptions (`field_descriptions.json`), the numbered contract text and the signature blocks. The model returns agreement-wide fields, per-producer fields, per-song fields and an advance mapping, each with the line numbers it read the value from.
+4. **Reconciliation**: the blocks decide how many parties there are and whether each signed. The model only names them. Execution Status (`FX` fully / `PX` partially / `NX` not executed) is computed from the blocks.
+5. **Coordinates**: each value is matched to the words on its cited lines. If that fails, the search widens by two lines; if that also fails, the cited lines are highlighted whole. The matched words are merged into one box per line (`gpt_extractor.py`).
 
-## Installation
+## API
 
-### For Local Development:
+### Async jobs (used by RoyaltyHouse)
 
-1. **Clone the repository:**
-   ```bash
-   git clone <repo-url>
-   cd Text Extraction Tool
-   ```
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| POST | `/presigned-upload-url` | `{"filename": "x.pdf", "content_type": "application/pdf"}` | `{"upload_url", "s3_key"}`. PUT the PDF to `upload_url`. |
+| POST | `/extract_from_url?artist_id=&original_document_id=` | `{"s3_key": "..."}` or `{"url": "..."}` | `202 {"job_id", "status": "pending"}` |
+| GET | `/result/<job_id>` | | Job record: `status` is `pending`, `processing`, `done` or `failed`. `result.preview` holds the fields when done; `error` holds the traceback when failed. |
 
-2. **Install local dependencies:**
-   ```bash
-   pip install -r requirements-local.txt
-   ```
+`url` can be a direct PDF link or a Google Drive share link. Jobs run in a background invocation of the same Lambda, outside API Gateway's 29 s limit.
 
-3. **Set up environment variables:**
-   - Create a `.env` file in the project root with your OpenRouter API key and default model:
-     ```env
-     OPENROUTER_API_KEY=your_openrouter_api_key_here
-     OPENROUTER_DEFAULT_MODEL=openai/gpt-5.4-mini
-     ```
+### Synchronous
 
-4. **Configure AWS S3:**
-   - Ensure your AWS credentials are configured
-   - Update the `S3_BUCKET` variable in `app.py` with your bucket name
+| Method | Path | Notes |
+|---|---|---|
+| POST | `/extract?artist_id=&original_document_id=` | Multipart, one or more `file` fields. Each PDF is parsed separately. JPEG/PNG images are parsed together as one document, a page per image, without coordinates. |
+| GET | `/get_fields` | Field descriptions. |
+| GET | `/max` | Health check. |
 
-5. **Run locally:**
-   ```bash
-   python app.py
-   ```
+## Result format
 
-### For AWS Lambda Deployment:
-
-1. **Use the Lambda layer** (`lambda-layer-final-working.zip`) that contains all dependencies
-2. **Upload the Lambda function code** (without local dependencies)
-3. **Add environment variables** in Lambda console:
-   - `OPENROUTER_API_KEY`: Your OpenRouter API key
-   - `OPENROUTER_DEFAULT_MODEL`: OpenRouter model slug (e.g. `openai/gpt-5.4-mini`)
-
-## Running the App
-
-### Local Development:
-```bash
-python app.py
-```
-The Flask server will start on `http://127.0.0.1:5000/` by default.
-
-### Lambda Deployment:
-- Deploy using the provided Lambda layer
-- Configure API Gateway for HTTP endpoints
-
-## API Endpoints
-
-### 1. Upload a PDF file
-- **POST** `/extract`
-- Form-data: `file` (PDF)
-- Example query params: `artist_id`, `original_document_id`
-- Returns: Extracted fields with bounding box coordinates for PDF highlighting
-
-**Response format:**
 ```json
 {
-  "Artist Name": {
-    "value": "A$AP Mob",
-    "page_number": 1,
-    "coords": {
-      "Left": 0.1234,
-      "Top": 0.2567,
-      "Width": 0.3456,
-      "Height": 0.0234
-    }
-  }
+  "Effective Date": {"value": "July 16, 2026", "lines": [3], "page_number": 1,
+                     "coords": [{"Left": 0.52, "Top": 0.11, "Width": 0.12, "Height": 0.01}]},
+  "signatures": [{"value": "Kings From Queens, LLC", "signed": true, "lines": [120, 121], "page_number": 6, "coords": [...]}],
+  "Execution Status": {"value": "FX", "lines": [120], "page_number": 6, "coords": [...]},
+  "Advance Mapping": {"structure": "aggregate", "aggregate_total": "$10,000", "entries": [...], "lines": [...]},
+  "producers": [{"producer_name": "...", "Client Party": {...}, "Producer Royalty Points": [{...}], ...}],
+  "songs": [{"song_title": "...", "is_rate_explicit": true, "advance_scope": "agreement", ...}]
 }
 ```
 
-### 2. Extract from a file URL
-- **POST** `/extract_from_url`
-- JSON body: `{ "url": "<file_url>" }`
-- Query params: `artist_id`, `original_document_id`
-- Returns: Same format as above with coordinates
+- `coords` holds one box per line the value spans, normalized 0–1 to the page (`Left`/`Top` from the top-left corner). It is `null` when the value can't be located.
+- Missing values are `"not found"`. Fields marked `"is_array": true` in `field_descriptions.json` return a list of `{value, lines}` entries.
 
-### 3. Get field descriptions
-- **GET** `/get_fields`
-- Returns: JSON of all field descriptions
+## Fields
 
-### 4. Add or update a field description
-- **POST** `/add_field`
-- JSON body: `{ "field": "Field Name", "value": "Description" }`
+- `field_descriptions.json` holds each field's extraction instructions.
+- The lists in `prompt.py` set which fields are requested and at what level: universal, per producer or per song.
+- Fields whose output isn't a plain `{value, lines}` have their output example in `_SHAPES`.
 
-### 5. Delete a field description
-- **DELETE** `/delete_field/<field_key>`
+## Configuration
 
-## Development vs Production
+| Variable | Purpose |
+|---|---|
+| `OPENROUTER_API_KEY` | OpenRouter key |
+| `OPENROUTER_DEFAULT_MODEL` | Model slug, default `openai/gpt-5.4-mini` |
+| `BUCKET_NAME` | S3 bucket for uploads, Textract input and job records (`jobs/<id>.json`) |
+| `LAMBDA_FUNCTION_ARN` | Function that runs background jobs; the deploy workflow sets it |
 
-### Local Development:
-- Uses `requirements-local.txt` with `awsgi` for local testing
-- Runs Flask development server
-- Full debugging capabilities
+## Deployment
 
-### Lambda Production:
-- Uses Lambda layer with `aws-wsgi` (Lambda-compatible)
-- No local dependencies needed
-- Optimized for serverless execution
+Every push to `main` deploys through GitHub Actions (`.github/workflows/lambda_function.yaml`). The workflow zips the code, uploads it to the `extract-tool-api` Lambda and sets a 300 s timeout. Python dependencies come from a Lambda layer, not from `requirements.txt`.
 
-## Known Limitations
-- **API Gateway timeout**: REST API has a hard 29-second timeout. Documents that take longer to process through Textract + OpenAI will return a 504 Gateway Timeout. For longer processing times, consider switching to Lambda function URLs (up to 15 min timeout).
-- **File upload size**: Direct uploads via `/extract` are base64-encoded through API Gateway, so PDFs over ~4.5 MB will exceed Lambda's 6 MB payload limit. Use `/extract_from_url` for larger files.
-- **Coordinate matching**: Bounding boxes are matched at the WORD level using Textract WORD blocks. For multi-word values, consecutive words are identified and their bboxes are merged into a single rectangle for precise highlighting. When a value appears multiple times on the same page, the system uses spatial proximity to the field label to disambiguate.
+## Local development
 
-## Notes
-- Only PDF files are currently supported for extraction (images supported via Textract but without coordinate data).
-- Requires a valid OpenRouter API key (`OPENROUTER_API_KEY`) and a model slug (`OPENROUTER_DEFAULT_MODEL`).
-- Requires AWS Textract for OCR and bounding box extraction.
-- Files are temporarily stored in AWS S3 bucket for Textract processing.
-- Field descriptions are stored locally in `field_descriptions.json`.
-- Coordinates are normalized (0.0-1.0 range) - multiply by page dimensions to get pixel coordinates.
-   - `Left`: Distance from left edge (0.0 = left, 1.0 = right)
-   - `Top`: Distance from top edge (0.0 = top, 1.0 = bottom)
-   - `Width`: Width as percentage of page width
-   - `Height`: Height as percentage of page height
+```bash
+pip install -r requirements.txt
+python app.py        # http://127.0.0.1:5000
+```
+
+Put `OPENROUTER_API_KEY` in `.env`. You also need AWS credentials that can reach the bucket, Textract and Lambda.
+
+Locally, `/extract_from_url` still hands jobs to the deployed Lambda (`LAMBDA_FUNCTION_ARN`). Use `/extract` to run the whole pipeline on your machine.
+
+## Tests
+
+```bash
+python tests/test_signature_blocks.py
+```
+
+## Limitations
+
+- Background jobs accept PDFs only. Images are only supported through `/extract`, and they get no coordinates.
+- Textract gets 115 s. The model call gets whatever time is left before the Lambda's 300 s timeout, up to 180 s, and is never retried. A slow or failed model call fails the job rather than leaving it stuck in `processing`.
+- Unhandled errors return `500 {"error", "type"}`, with the traceback written to CloudWatch.
+- `/extract` goes through API Gateway, which means a 29 s timeout and roughly a 4.5 MB file limit. Use the presigned-upload flow for real documents.
 
 ## License
-MIT 
+
+MIT
