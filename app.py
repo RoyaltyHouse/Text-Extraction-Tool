@@ -1,4 +1,3 @@
-import hmac
 import json
 import os
 import re
@@ -24,14 +23,6 @@ CORS(app)
 LAMBDA_FUNCTION_ARN = os.getenv("LAMBDA_FUNCTION_ARN", "arn:aws:lambda:us-east-2:713944518341:function:extract-tool-api")
 lambda_client = boto3.client("lambda")
 ALLOWED_EXTS = {"pdf"}
-API_KEY = os.getenv("PARSER_API_KEY")
-
-
-@app.before_request
-def require_api_key():
-    # Enforced once PARSER_API_KEY is set, so callers can start sending the key first.
-    if API_KEY and request.endpoint != "max_route" and not hmac.compare_digest(request.headers.get("x-api-key", ""), API_KEY):
-        return jsonify({"error": "Unauthorized"}), 401
 
 
 @app.errorhandler(TextractError)

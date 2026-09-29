@@ -63,7 +63,6 @@ RoyaltyHouse keeps one instructions file per document type (`resources/prompts/`
 |---|---|
 | `OPENROUTER_API_KEY` | OpenRouter key |
 | `OPENROUTER_DEFAULT_MODEL` | Model slug, e.g. `openai/gpt-6-luna` (falls back to `openai/gpt-5.4-mini`) |
-| `PARSER_API_KEY` | When set, every route except `/max` requires a matching `x-api-key` header |
 | `BUCKET_NAME` | S3 bucket for uploads, Textract input and job records (`jobs/<id>.json`) |
 | `LAMBDA_FUNCTION_ARN` | Function that runs background jobs; the deploy workflow sets it |
 
