@@ -24,11 +24,9 @@ LAMBDA_FUNCTION_ARN = os.getenv("LAMBDA_FUNCTION_ARN", "arn:aws:lambda:us-east-2
 lambda_client = boto3.client("lambda")
 ALLOWED_EXTS = {"pdf"}
 
-
 @app.errorhandler(TextractError)
 def handle_textract_error(e):
     return jsonify({"error": str(e)}), e.status
-
 
 @app.errorhandler(Exception)
 def handle_exception(e):
@@ -37,11 +35,9 @@ def handle_exception(e):
     traceback.print_exc()
     return jsonify({"error": str(e), "type": type(e).__name__}), 500
 
-
 def _unsupported(filename):
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     return None if ext in ALLOWED_EXTS else f"Unsupported file type '.{ext}'. Allowed: {', '.join(ALLOWED_EXTS)}"
-
 
 @app.route("/extract", methods=["POST"])
 def uploads():
@@ -80,7 +76,6 @@ def _normalize_to_direct_download(url):
     file_id = match.group(1) if match else urllib.parse.parse_qs(parsed.query).get("id", [None])[0]
     return f"https://drive.google.com/uc?export=download&id={file_id}" if file_id else url
 
-
 @app.route("/presigned-upload-url", methods=["POST"])
 def presigned_upload_url():
     data = request.get_json(force=True)
@@ -96,7 +91,6 @@ def presigned_upload_url():
         ExpiresIn=300,
     )
     return jsonify({"upload_url": upload_url, "s3_key": s3_key}), 200
-
 
 def _run_extraction(job_id, s3_key=None, url=None, artist_id=None, original_document_id=None, instructions=None,
                     deadline=None):
@@ -125,7 +119,6 @@ def _run_extraction(job_id, s3_key=None, url=None, artist_id=None, original_docu
     except Exception:
         job_store.update_job(job_id, status="failed", error=traceback.format_exc())
 
-
 @app.route("/extract_from_url", methods=["POST"])
 def extract_from_url():
     data = request.get_json(force=True)
@@ -145,7 +138,6 @@ def extract_from_url():
     }).encode())
     return jsonify({"job_id": job_id, "status": "pending"}), 202
 
-
 @app.route("/result/<job_id>", methods=["GET"])
 def get_result(job_id):
     try:
@@ -153,11 +145,9 @@ def get_result(job_id):
     except KeyError:
         return jsonify({"error": "Job not found"}), 404
 
-
 @app.route("/max", methods=["GET"])
 def max_route():
     return jsonify({"message": "Api gateway is working"}), 200
-
 
 def lambda_handler(event, context):
     if "httpMethod" in event:
@@ -167,7 +157,6 @@ def lambda_handler(event, context):
         _run_extraction(**event, deadline=time.time() + context.get_remaining_time_in_millis() / 1000)
         return {"statusCode": 200, "body": "Extraction complete"}
     return {"statusCode": 200, "body": "Lambda function is working! Use API Gateway to access the endpoints."}
-
 
 if __name__ == "__main__":
     app.run(debug=True)

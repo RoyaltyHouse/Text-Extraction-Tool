@@ -4,7 +4,6 @@ import os
 with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "producer_agreement.txt"), encoding="utf-8") as f:
     _DEFAULT_INSTRUCTIONS = f.read()
 
-
 def _contract_text(line_index):
     parts, page = [], None
     for n in sorted(line_index):
@@ -13,7 +12,6 @@ def _contract_text(line_index):
             parts.append(f"\n--- Page {page} ---")
         parts.append(f"[L{n}] {line_index[n]['text']}")
     return "\n".join(parts)
-
 
 def _signature_blocks(blocks):
     active = [b for b in blocks if not b["excluded"]]
@@ -31,7 +29,6 @@ def _signature_blocks(blocks):
             parts.append(f"    {'*' if f['is_signed_signal'] else ' '} {f['key']:<10} {value}")
         parts.append("")
     return "\n".join(parts)
-
 
 def build_extraction_prompt(line_index, signature_blocks, instructions=None):
     return f"""{(instructions or _DEFAULT_INSTRUCTIONS).strip()}

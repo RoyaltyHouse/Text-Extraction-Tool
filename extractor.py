@@ -1,37 +1,31 @@
 import os
 import time
 import uuid
-
 import boto3
 
 S3_BUCKET = os.getenv("BUCKET_NAME")
 s3 = boto3.client("s3")
 textract = boto3.client("textract")
 
-
 class TextractError(Exception):
     def __init__(self, message, status):
         super().__init__(message)
         self.status = status
-
 
 def upload(filename, data):
     key = f"uploads/{uuid.uuid4()}/{filename}"
     s3.put_object(Bucket=S3_BUCKET, Key=key, Body=data)
     return key
 
-
 def _related(block, block_by_id, rel_type="CHILD"):
     return [block_by_id[i] for rel in block.get("Relationships", []) if rel["Type"] == rel_type
             for i in rel["Ids"] if i in block_by_id]
-
 
 def _kv_text(block, block_by_id):
     return " ".join(
         c["Text"] if c["BlockType"] == "WORD" else f"[{c.get('SelectionStatus', 'UNSELECTED')}]"
         for c in _related(block, block_by_id) if c["BlockType"] in ("WORD", "SELECTION_ELEMENT")
     ).strip()
-
 
 def textract_lines(key):
     job_id = textract.start_document_analysis(

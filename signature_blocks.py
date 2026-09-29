@@ -8,11 +8,9 @@ _NORM_KEY_RE = re.compile(r"[^a-z ]")
 _EXCLUDED_RE = re.compile(r"\b(soundexchange|letter of direction|lod|final audit report)\b", re.IGNORECASE)
 _Y_GAP, _X_GAP = 0.05, 0.20
 
-
 def _classify_key(key):
     norm = _NORM_KEY_RE.sub("", (key or "").lower()).strip()
     return "signed_signal" if norm in _SIGNED_KEYS else "meta" if norm in _META_KEYS else None
-
 
 def _chain_cluster(items, axis, gap):
     ordered = sorted(items, key=lambda c: c[axis])
@@ -23,7 +21,6 @@ def _chain_cluster(items, axis, gap):
         else:
             groups.append([item])
     return groups
-
 
 def _build_block(cluster, excluded):
     fields = [{"key": c["key"], "value": c["value"], "is_signed_signal": c["kind"] == "signed_signal"}

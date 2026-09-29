@@ -22,10 +22,8 @@ _CHAR_NORMALIZATIONS = str.maketrans({
 })
 _NEIGHBOR_RADIUS = 2
 
-
 def _norm(text):
     return text.translate(_CHAR_NORMALIZATIONS).lower().strip()
-
 
 def _merge_bboxes(bboxes):
     if len(bboxes) == 1:
@@ -35,10 +33,8 @@ def _merge_bboxes(bboxes):
             "Width": max(b["Left"] + b["Width"] for b in bboxes) - left,
             "Height": max(b["Top"] + b["Height"] for b in bboxes) - top}
 
-
 def _words(line_nums, line_index):
     return [(w, ln) for ln in line_nums for w in line_index.get(ln, {}).get("words", [])]
-
 
 def _find_word_span(value, words):
     # Score is the share of the span's text the value covers; it must beat half.
@@ -56,12 +52,10 @@ def _find_word_span(value, words):
                 break
     return best
 
-
 def _line_nums(lines):
     # Models sometimes return "42" or "L42" despite the prompt; anything else unreadable is dropped.
     return [int(m.group(1)) for ln in (lines if isinstance(lines, list) else [lines])
             if (m := re.fullmatch(r"\[?L?(\d+)\]?", str(ln).strip()))]
-
 
 def _resolve_field(field, line_index):
     value, lines = field.get("value"), _line_nums(field.get("lines"))
@@ -82,14 +76,12 @@ def _resolve_field(field, line_index):
             coords, lines = [_merge_bboxes(b) for b in by_line.values()], sorted(by_line)
     field.update(lines=lines, coords=coords, page_number=next((line_index[ln]["page"] for ln in lines if ln in line_index), None))
 
-
 def _apply_coords(node, line_index):
     if isinstance(node, dict) and "value" in node:
         _resolve_field(node, line_index)
     elif isinstance(node, (dict, list)):
         for child in node.values() if isinstance(node, dict) else node:
             _apply_coords(child, line_index)
-
 
 def _reconcile_signatures(blocks, gpt_signatures):
     # Blocks decide the count and signed verdict; the model only labels each party, in block order.
@@ -102,11 +94,9 @@ def _reconcile_signatures(blocks, gpt_signatures):
                     "signed": block["signed"], "lines": list(range(lo, hi + 1)) if lo is not None else []})
     return out
 
-
 def _derive_execution_status(signatures):
     signed = sum(s["signed"] for s in signatures)
     return "NX" if not signed else "FX" if signed == len(signatures) else "PX"
-
 
 def extract_field_information(line_index, annotations=(), deadline=None, instructions=None):
     blocks = cluster_signature_blocks(annotations, line_index)
