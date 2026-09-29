@@ -164,6 +164,7 @@ PHASE 5 — PRODUCER-SPECIFIC FIELDS (for EACH producer)
 
 - Extract from the section pertaining to THAT producer only
 - If a term applies to all producers, DUPLICATE it into every entry
+- Missing fields: {{"value": "not found", "lines": []}}
 
 PHASE 6 — SONG-SPECIFIC FIELDS (for EACH song)
 Fields: {song_fields}
@@ -175,6 +176,7 @@ Fields: {song_fields}
 - "is_rate_explicit": true if explicitly stated for this song; false if from a blanket clause
 - "advance_scope": set to "agreement" if ONE advance covers all songs (no per-track breakdown); set to "song" if each track has its own distinct advance amount stated explicitly. Must be consistent with `Advance Mapping.structure` (per_song / per_master / per_producer_per_song → "song"; aggregate / equal_split / per_producer → "agreement"; none → "agreement").
 - Other blanket values: DUPLICATE into every song entry
+- Missing fields: {{"value": "not found", "lines": []}}
 
 OUTPUT FORMAT
 -------------

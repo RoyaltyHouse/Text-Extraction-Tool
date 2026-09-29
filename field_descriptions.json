@@ -47,7 +47,7 @@
         "description": "Determine the royalty calculation basis. Valid values: \"NAR\", \"PPD\", \"Net Profits\", or \"not found\".\n\nPPD (Published Price to Dealers): rate applied to a fixed wholesale or list price with fixed-percentage deductions (e.g. packaging, free goods).\n\nNAR (Net Actual Receipts): rate applied to actual receipts at the label, with itemized variable cost deductions (distribution fees, manufacturing, marketing).\n\nNet Profits: rate applied to revenue after deducting all costs including overhead, recording costs, marketing, and other recoupable expenses.\n\nReturn \"not found\" if the basis is ambiguous or absent. Set \"lines\" to the defining clause, not the section header."
     },
     "Third Party Money": {
-        "description": "Extract amounts payable to the producer from sources outside the primary royalty — e.g. synchronization fees, master use fees, mechanical royalties, or other allocations of non-royalty income.\n\nLook in sections labeled \"Third Party\", \"Synchronization\", \"Master Use\", \"Other Income\", or in clauses allocating revenue from third parties.\n\nReturn each amount as a short value (e.g. \"$20,000\", \"9.47%\"). One array entry per distinct source/amount. Omit surrounding context and section headers.",
+        "description": "Extract amounts payable to the producer from sources outside the primary royalty — e.g. synchronization fees, master use fees, mechanical royalties, SoundExchange / digital performance shares, or other allocations of non-royalty income.\n\nLook in sections labeled \"Third Party\", \"Synchronization\", \"Master Use\", \"Other Income\", clauses allocating revenue from third parties, or the producer's percentage in a SoundExchange Letter of Direction.\n\nReturn each amount as a short value (e.g. \"$20,000\", \"9.47%\"). Return every one found — one array entry per distinct source/amount. Omit surrounding context and section headers.",
         "is_array": true
     },
     "Organization Counting Units": {
@@ -66,6 +66,6 @@
         "description": "Extract the **Legal Advance** amount — the dollar value paid for legal fees.\n\nLook near: \"legal advance\", \"advance for legal fees\", \"contribution toward legal costs\".\n\nReturn ONLY the monetary value (e.g. \"$5,000\").\nSet \"lines\" to the line where the dollar amount appears, not the header line."
     },
     "Bumps": {
-        "description": "Extract the **full royalty escalation schedule (Bumps)** — ALL tiers including the base rate.\n\nReturn the complete schedule verbatim, e.g. \"Base: 3.5% NAR; Gold (500K): 4.0% NAR; Platinum (1M): 4.5% NAR\".\n\nInclude every tier listed (base through highest). Set \"lines\" to ALL lines containing the schedule."
+        "description": "Extract the **full royalty escalation schedule (Bumps)** — ALL tiers including the base rate.\n\nReturn the complete schedule verbatim, e.g. \"Base: 3.5% NAR; Gold (500K): 4.0% NAR; Platinum (1M): 4.5% NAR\".\n\nInclude every tier listed (base through highest). If the royalty never escalates (a single rate, or wording such as \"not escalated\"), return \"not found\" — a base rate alone is not a schedule; it belongs in Producer Royalty Points. Set \"lines\" to ALL lines containing the schedule."
     }
 }
