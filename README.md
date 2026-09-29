@@ -2,11 +2,13 @@
 
 Flask API on AWS Lambda that extracts structured fields from music royalty contracts. AWS Textract reads the PDF, an LLM (via OpenRouter) extracts the fields, and every value comes back with the page and bounding boxes needed to highlight it in the source document.
 
+The parser doesn't decide what to extract. The caller sends the document-specific instructions (fields, their descriptions, the output format) with each request; the parser adds the numbered contract text and the detected signature blocks, then handles signatures and highlighting.
+
 ## How it works
 
 1. **OCR**: Textract (FORMS + SIGNATURES) returns numbered lines with word boxes, plus detected signatures and form key/value pairs, each pinned to its nearest line (`extractor.py`).
 2. **Signature blocks**: signature-related annotations are clustered by position into one block per signing party (`signature_blocks.py`). A block counts as signed only when Textract detected a signature in it. Blocks on SoundExchange / Letter of Direction pages or DocuSign audit pages are excluded.
-3. **Extraction**: one prompt (`prompt.py`) combines the extraction rules, the field descriptions (`field_descriptions.json`), the numbered contract text and the signature blocks. The model returns agreement-wide fields, per-producer fields, per-song fields and an advance mapping, each with the line numbers it read the value from.
+3. **Extraction**: the caller's instructions are followed by the numbered contract text and the signature blocks (`prompt.py`). The model returns the requested fields, each with the line numbers it read the value from.
 4. **Reconciliation**: the blocks decide how many parties there are and whether each signed. The model only names them. Execution Status (`FX` fully / `PX` partially / `NX` not executed) is computed from the blocks.
 5. **Coordinates**: each value is matched to the words on its cited lines. If that fails, the search widens by two lines; if that also fails, the cited lines are highlighted whole. The matched words are merged into one box per line (`gpt_extractor.py`).
 
@@ -17,7 +19,7 @@ Flask API on AWS Lambda that extracts structured fields from music royalty contr
 | Method | Path | Body | Returns |
 |---|---|---|---|
 | POST | `/presigned-upload-url` | `{"filename": "x.pdf", "content_type": "application/pdf"}` | `{"upload_url", "s3_key"}`. PUT the PDF to `upload_url`. |
-| POST | `/extract_from_url?artist_id=&original_document_id=` | `{"s3_key": "..."}` or `{"url": "..."}` | `202 {"job_id", "status": "pending"}` |
+| POST | `/extract_from_url?artist_id=&original_document_id=` | `{"s3_key": "..."}` or `{"url": "..."}`, plus `"instructions"` | `202 {"job_id", "status": "pending"}` |
 | GET | `/result/<job_id>` | | Job record: `status` is `pending`, `processing`, `done` or `failed`. `result.preview` holds the fields when done; `error` holds the traceback when failed. |
 
 `url` can be a direct PDF link or a Google Drive share link. Jobs run in a background invocation of the same Lambda, outside API Gateway's 29 s limit.
@@ -26,8 +28,7 @@ Flask API on AWS Lambda that extracts structured fields from music royalty contr
 
 | Method | Path | Notes |
 |---|---|---|
-| POST | `/extract?artist_id=&original_document_id=` | Multipart, one or more `file` fields. Each PDF is parsed separately. JPEG/PNG images are parsed together as one document, a page per image, without coordinates. |
-| GET | `/get_fields` | Field descriptions. |
+| POST | `/extract?artist_id=&original_document_id=` | Multipart, one or more `file` fields plus an `instructions` field. Each PDF is parsed separately. JPEG/PNG images are parsed together as one document, a page per image, without coordinates. |
 | GET | `/max` | Health check. |
 
 ## Result format
@@ -45,20 +46,24 @@ Flask API on AWS Lambda that extracts structured fields from music royalty contr
 ```
 
 - `coords` holds one box per line the value spans, normalized 0–1 to the page (`Left`/`Top` from the top-left corner). It is `null` when the value can't be located.
-- Missing values are `"not found"`. Fields marked `"is_array": true` in `field_descriptions.json` return a list of `{value, lines}` entries.
+- The shape of everything else is whatever the instructions ask for. Any `{value, lines}` object, at any depth, gets `coords` and `page_number`.
 
-## Fields
+## Instructions
 
-- `field_descriptions.json` holds each field's extraction instructions.
-- The lists in `prompt.py` set which fields are requested and at what level: universal, per producer or per song.
-- Fields whose output isn't a plain `{value, lines}` have their output example in `_SHAPES`.
+RoyaltyHouse keeps one instructions file per document type (`resources/prompts/` in that repo) and sends it as `instructions`. The instructions must:
+
+- ask for each value verbatim, with `"lines"` as the integer line numbers it appears on (highlighting depends on it);
+- include a `signatures` array with one entry per DETECTED SIGNATURE BLOCK, in order. The parser keeps only each entry's name; the blocks decide signed/unsigned, and `Execution Status` is computed from them.
+
+`producer_agreement.txt` is a transitional default for callers that don't send instructions yet. Delete it, and the fallback in `prompt.py`, once every RoyaltyHouse environment sends its own.
 
 ## Configuration
 
 | Variable | Purpose |
 |---|---|
 | `OPENROUTER_API_KEY` | OpenRouter key |
-| `OPENROUTER_DEFAULT_MODEL` | Model slug, default `openai/gpt-5.4-mini` |
+| `OPENROUTER_DEFAULT_MODEL` | Model slug, e.g. `openai/gpt-6-luna` (falls back to `openai/gpt-5.4-mini`) |
+| `PARSER_API_KEY` | When set, every route except `/max` requires a matching `x-api-key` header |
 | `BUCKET_NAME` | S3 bucket for uploads, Textract input and job records (`jobs/<id>.json`) |
 | `LAMBDA_FUNCTION_ARN` | Function that runs background jobs; the deploy workflow sets it |
 

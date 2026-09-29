@@ -19,6 +19,3 @@ python/
 # Ignore swap files
 *.swp
 *.swo
-
-# Ignore field descriptions file (contains sensitive data)
-field_descriptions.json

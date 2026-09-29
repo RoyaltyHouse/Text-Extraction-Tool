@@ -108,7 +108,7 @@ def _derive_execution_status(signatures):
     return "NX" if not signed else "FX" if signed == len(signatures) else "PX"
 
 
-def extract_field_information(line_index, annotations=(), deadline=None):
+def extract_field_information(line_index, annotations=(), deadline=None, instructions=None):
     blocks = cluster_signature_blocks(annotations, line_index)
     for i, b in enumerate(blocks, 1):
         tag = "EXCLUDED" if b["excluded"] else "SIGNED" if b["signed"] else "UNSIGNED"
@@ -119,7 +119,7 @@ def extract_field_information(line_index, annotations=(), deadline=None):
         model=DEFAULT_MODEL,
         messages=[
             {"role": "system", "content": "You are an intelligent document extraction assistant."},
-            {"role": "user", "content": build_extraction_prompt(line_index, blocks)},
+            {"role": "user", "content": build_extraction_prompt(line_index, blocks, instructions)},
         ],
         max_completion_tokens=16384,
         # OpenRouter's own reasoning control; the OpenAI-style top-level reasoning_effort isn't reliably honoured.

@@ -1,0 +1,299 @@
+Extract structured data from a music royalty contract.
+
+CRITICAL RULES — READ BEFORE EXTRACTING
+========================================
+LINE REFERENCES: Each contract line is prefixed [LN]. For every field, "lines" must list
+ONLY the line(s) where the returned value text physically appears. The value you return
+MUST be findable on those lines. NEVER reference a header/label line when the value is on
+the next line.
+  WRONG: value "$60,000", lines → "3.6 Legal Advance. Upon full execution, Label shall pay..."
+  RIGHT: value "$60,000", lines → "advance of Sixty Thousand Dollars ($60,000.00) recoupable..."
+
+VALUE PRECISION: Return ONLY the specific data point — not the surrounding sentence, section
+header, label prefix, or any additional context. Do NOT rephrase, summarize, or append info
+from other fields.
+  WRONG: "The Artist for whom the Master Recordings were produced is DEVON HARRIS, p/k/a Quay Global"
+  RIGHT: "Quay Global"
+  WRONG: "Multi-Song, 3 Tracks"  (appended track count)
+  RIGHT: "Multi-Song arrangement"  (verbatim from document)
+  WRONG: "2.0% of NAR"  (appended royalty type from a different field)
+  RIGHT: "2.0%"
+
+VALUES MUST BE VERBATIM from the document text. NEVER invent, infer, combine, or guess —
+unless a field's description lists fixed values to choose from or defines a calculation.
+Found field: {"value": "...", "lines": [42, 43]}
+Missing field: {"value": "not found", "lines": []}
+Array fields ("Producer Royalty Points", "Third Party Money", "signatures"): [{"value": "...", "lines": [42]}, ...]
+"lines" must contain plain integers only — NOT strings, NOT the [L] prefix from the contract text.
+NEVER omit a field. Return valid JSON ONLY — no Markdown, no explanation.
+
+PHASE 1 — IDENTIFY PRODUCERS
+Scan the opening paragraph and signature block for every producer party.
+- Names/entities followed by ("Producer"), ("you"), or the letter's addressee
+- Multiple C/O entries tied to different names
+- "each of you", "collectively", or listed co-producers
+Rules:
+- Use EXACT names from the document
+- Always identify at least one; use "Producer" only if no name exists
+- NEVER include the Artist, Label, or Distributor as a producer
+
+PHASE 2 — IDENTIFY SONGS
+Scan the entire document for every song/master recording.
+- Song titles in opening paragraphs ("master recording entitled '...'")
+- Schedules, appendices, tables ("Schedule A", "List of Masters")
+Rules:
+- Use EXACT titles from the document
+- Always identify at least one
+
+PHASE 3 — UNIVERSAL FIELDS (once for the whole agreement)
+1. **signatures**
+   One entry per block listed under DETECTED SIGNATURE BLOCKS (after the contract text), in the order shown; an empty array if none are listed. Do NOT find, add, or skip blocks yourself.
+
+- "value": the party's entity name (e.g. "Cheeze Beatz, LLC", "Maybach Music Group, LLC") or person's full name (e.g. "Darryl McCorkell"). Read the contract text near the block's lines AND the typed name on/near the signature line. Do NOT use "An Authorized Signatory" — that is the signer's capacity, not their identity. Fall back to a generic role ("Producer", "Label", "Company") only when no specific name is visible. Never return "not found".
+- "signed": copy the block's verdict exactly — true for SIGNED, false for UNSIGNED.
+- "lines": the block's line range as integers.
+2. **Song Title**
+   Extract the **Song Title(s)** from the agreement.
+
+Locations: first 1-3 paragraphs ("master recording entitled '...'"), schedules, appendices, or tables.
+
+Return ONLY the title(s) — not surrounding phrases. Multiple titles: comma-separate them.
+Set "lines" to the line(s) where the titles themselves appear, not header lines.
+3. **Artist Name**
+   Extract the **Artist Name** — the professional/stage name (p/k/a).
+
+Found in the first paragraph near ("Artist") or similar label. If both a legal name and a p/k/a are given, return ONLY the p/k/a.
+
+Return ONLY the name — no quotes, labels, or legal names.
+Set "lines" to the line where the name itself appears, not the line introducing it.
+4. **Single/Multisong Line**
+   Extract the scope phrase from the opening paragraphs that describes whether the agreement covers a single song, multiple songs, or a project.
+
+Return the complete phrase verbatim, including any song titles, counts, or qualifiers that appear within it (e.g. "one (1) master recording entitled 'Title'", "three (3) master recordings"). Do not truncate to the first few words and do not invent content not in the phrase.
+5. **Direct Counterparty**
+   Extract the **Direct Counterparty** — the party issuing the agreement, referred to as "we", "us", or "Company".
+
+Return ONLY the entity name.
+6. **Alternative Counterparties**
+   Extract names of any **Alternative Counterparties** — other entities involved beyond the direct counterparty.
+
+Found in rights assignment clauses, revenue flow sections, SoundExchange LOD, Schedule A, or signature blocks.
+
+Return a comma-separated list of entity names, or "not found".
+Set "lines" to ONLY the lines containing the entity names, not the surrounding clause.
+7. **Effective Date**
+   Extract the **Effective Date** from the first paragraph.
+
+If multiple dates on page 1, select the one labeled "Effective as of..." or "Effective Date:".
+
+Return ONLY the date string.
+8. **Contract Term**
+   Extract the **Contract Term** — how long the agreement stays in effect.
+
+Look for duration or expiration language such as: "for a term of...", "shall remain in effect for...", "for a period of...", "Initial Period", "Term of this Agreement", "expires on...", "expiration date", "until [date]".
+
+If the contract states an explicit end/expiration date, return that date (e.g. "December 31, 2025"). Otherwise return the duration phrase verbatim (e.g. "two (2) years from the Effective Date", "twelve (12) months").
+
+Return ONLY the term or date value — not the surrounding sentence or section header. Do NOT confuse a perpetual rights grant ("in perpetuity", "for the life of copyright") with the agreement's term — that is a rights assignment, not a time-limited term. If no term or expiration is stated, return "not found".
+9. **Distributor**
+   Extract the **Distributor** name.
+
+Look for: "distributed by [Entity]", "released by [Entity]", or "[Entity], a division of [Parent]".
+
+If not explicitly stated, the Label and Distributor may be the same entity.
+
+Return ONLY the entity name.
+10. **Label**
+   Extract the record label as named in the contract — the entity granting the recording agreement.
+
+Look in the opening paragraph, recitals, and signature block. Use the contract-level entity, not labels referenced in per-song schedules or SoundExchange/LOD forms.
+
+Return the label name verbatim. Do not substitute a parent company.
+11. **Organization Counting Units**
+   Check if the contract uses **USNRC** (U.S. Normal Retail Channels) for measuring sales.
+
+Look for: "USNRC Net Sales", "Net Sales (USNRC)", "sales through U.S. Normal Retail Channels".
+
+Return "USNRC" or "not found".
+
+PHASE 4 — ADVANCE MAPPING (FILL BEFORE PRODUCER/SONG ADVANCES)
+Capture the **complete producer × song advance structure** as a single source of truth. This is the relational matrix from which the per-producer and per-song scalar `Producer Advance Legal Recoupment` values are projected.
+
+Return an OBJECT with this exact shape:
+  {
+    "structure": one of ["per_producer_per_song", "per_song", "per_producer", "per_master", "aggregate", "equal_split", "none"],
+    "aggregate_total": dollar string or "not found",
+    "split_note": short phrase or "not found" (e.g. "to be split equally among producers"),
+    "entries": [ {"producer": "<name or 'all'>", "song": "<title or 'all'>", "value": "$X", "lines": [N]}, ... ],
+    "lines": [N, ...]
+  }
+
+STRUCTURE TAXONOMY — choose the one that matches the document. The five common patterns to recognize:
+  1. **In-text (body paragraph)** — advance stated inside a paragraph under sections like "Recording Costs", "Compensation", "Producer Advance", or "Advance". Often phrased "Producer shall receive an advance of $X". Classify the structure by who/what the amount applies to (per_producer if tied to one producer, per_song if tied to one song, aggregate if tied to all). Read carefully — paragraph form is the highest-miss case; if a paragraph names BOTH a producer and a song near a dollar figure, emit a per_producer_per_song entry, do NOT collapse to aggregate.
+  2. **Schedule / table** — advance listed in "Schedule A", "Schedule 1", or a labeled table. Usually one row per song with an amount column. Use `per_song` (or `per_producer_per_song` if both axes shown).
+  3. **Per-master language** — "$X per master recording" or "$X for each Master". Set `structure = "per_master"`, `aggregate_total = "$X"` (the per-master rate), and emit one entry PER SONG with value = $X.
+  4. **Aggregate-only** — a single total advance with no per-song or per-producer breakdown. Set `structure = "aggregate"`, `aggregate_total = "$X"`, and emit ONE entry with `producer: "all", song: "all", value: "$X"`.
+  5. **No advance** — no advance language anywhere. Set `structure = "none"`, `aggregate_total = "not found"`, `entries = []`.
+
+Equal-split case: if the document says the advance is "to be split equally among producers", set `structure = "equal_split"`, `aggregate_total` to the stated total, `split_note` to the literal phrase from the document, and emit one entry per producer with value = aggregate / producer_count.
+
+Multi-producer per-share case: if distinct amounts are stated per producer (e.g. "$6,666.67 payable to Producer A and $3,333.34 payable to Producer B"), use `per_producer` (or `per_producer_per_song` if also broken out by song). Emit one entry per (producer, song) pair with that producer's stated share.
+
+ENTRY rules:
+  - `producer`: producer name verbatim from the document, or "all" if the entry applies across producers.
+  - `song`: song title verbatim from the document, or "all" if the entry applies across songs.
+  - `value`: monetary value only (e.g. "$5,000"). No surrounding text.
+  - `lines`: the line(s) where THAT specific amount appears.
+
+Top-level `lines`: the line(s) where the overall advance language anchors (typically the section header or the aggregate-total line).
+
+PHASE 5 — PRODUCER-SPECIFIC FIELDS (for EACH producer)
+1. **Client Party**
+   Extract the **Client Party** name — the individual or entity addressed as "you" or "Producer" in the opening paragraph.
+
+Return ONLY the name.
+2. **Lawyer Information**
+   Extract attorney/legal counsel for both parties.
+
+Common locations: "C/O [Firm]", "represented by", "Attorney:", names followed by "Esq." or firm suffixes (LLP, LLC, P.C., P.A., PLLC), address blocks near party names, payment-of-legal-fees clauses, and signature-block headers.
+
+Return {"client_lawyer": "Name, Firm, Address", "counterparty_lawyer": "Name, Firm, Address"}. Either side may independently be "not found".
+
+Assign by proximity to the Client Party / Producer name versus the Counterparty / Label name, or by explicit role labels (e.g. "Producer's counsel", "Label's counsel").
+3. **Producer Royalty Points**
+   Extract the **initial/base Producer Royalty rate(s)** — one entry per distinct rate.
+
+IMPORTANT: Only the INITIAL rate. Escalated/bump rates belong in **Bumps**. If "1.5% escalating to 2.0% after Gold", only return "1.5%" here.
+
+Return the percentage only (e.g. "3%", "2.0%"). Do NOT append the royalty type — that belongs in Type of Royalty. Do NOT prepend song titles or any label — return ONLY the numeric percentage.
+
+One array entry per DISTINCT rate value. If a contract assigns 2.25% to three songs and 1.25% to two songs, return two entries: "2.25%" and "1.25%". Do NOT emit one entry per song. Per-song mappings belong in the songs[] array's Producer Royalty Points field, not here.
+4. **Type of Royalty**
+   Determine the royalty calculation basis. Valid values: "NAR", "PPD", "Net Profits", or "not found".
+
+PPD (Published Price to Dealers): rate applied to a fixed wholesale or list price with fixed-percentage deductions (e.g. packaging, free goods).
+
+NAR (Net Actual Receipts): rate applied to actual receipts at the label, with itemized variable cost deductions (distribution fees, manufacturing, marketing).
+
+Net Profits: rate applied to revenue after deducting all costs including overhead, recording costs, marketing, and other recoupable expenses.
+
+Return "not found" if the basis is ambiguous or absent. Set "lines" to the defining clause, not the section header.
+5. **Bumps**
+   Extract the **full royalty escalation schedule (Bumps)** — ALL tiers including the base rate.
+
+Return the complete schedule verbatim, e.g. "Base: 3.5% NAR; Gold (500K): 4.0% NAR; Platinum (1M): 4.5% NAR".
+
+Include every tier listed (base through highest). If the royalty never escalates (a single rate, or wording such as "not escalated"), return "not found" — a base rate alone is not a schedule; it belongs in Producer Royalty Points. Set "lines" to ALL lines containing the schedule.
+6. **Third Party Money**
+   Extract amounts payable to the producer from sources outside the primary royalty — e.g. synchronization fees, master use fees, mechanical royalties, SoundExchange / digital performance shares, or other allocations of non-royalty income.
+
+Look in sections labeled "Third Party", "Synchronization", "Master Use", "Other Income", clauses allocating revenue from third parties, or the producer's percentage in a SoundExchange Letter of Direction.
+
+Return each amount as a short value (e.g. "$20,000", "9.47%"). Return every one found — one array entry per distinct source/amount. Omit surrounding context and section headers.
+7. **Producer Advance Legal Recoupment**
+   Extract the **Producer Advance amount** for the entry's scope (producer or song).
+
+This field is a SCALAR PROJECTION of the `Advance Mapping` universal field — fill it consistently with what `Advance Mapping.entries` says. The mapping is the source of truth; do not invent an amount here that isn't in the mapping.
+
+Projection rules:
+  - In a producer entry: if the mapping has a single advance for this producer (per_producer), use it. If multiple per-song entries exist for this producer (per_producer_per_song), use the SUM of that producer's entries. If `equal_split`, divide the aggregate by the producer count. If `aggregate` only, copy the aggregate total.
+  - In a song entry: if the mapping has a single advance for this song (per_song or per_master), use it. If multiple per-producer entries exist for this song, use the SUM across producers for that song. If `aggregate`, `equal_split`, or `per_producer` with no per-song breakdown, copy the aggregate total.
+  - If `Advance Mapping.structure` is `none`, return "not found".
+
+Return ONLY the monetary value (e.g. "$10,000") with no surrounding text.
+Set "lines" to the line(s) where the dollar amount(s) used in the projection appear — not header lines.
+8. **Recoupment Classification**
+   How the advance is recouped against royalties. Valid values: "Non-Recoupable", "Non-Returnable Recoupable", "Partially-Recoupable", "Fully-Recoupable", or "not found".
+
+Use "Partially-Recoupable" for any partial recoupment, including stated percentages (e.g. "50% recoupable"). The full clause text belongs in "Classification of Recoupment Language".
+
+Found adjacent to the advance amount.
+9. **Legal Advance**
+   Extract the **Legal Advance** amount — the dollar value paid for legal fees.
+
+Look near: "legal advance", "advance for legal fees", "contribution toward legal costs".
+
+Return ONLY the monetary value (e.g. "$5,000").
+Set "lines" to the line where the dollar amount appears, not the header line.
+10. **Classification of Recoupment Language**
+   Extract the **recoupment clause** — the language defining when the Producer becomes eligible for royalty payments.
+
+Look for: "No royalty shall be payable until...", "After recoupment of Recording Costs...", "retroactively from record one after...".
+
+Return the verbatim clause text, excluding section headers/numbers (e.g. omit "4.1.7 Classification of Recoupment Language.").
+
+- Extract from the section pertaining to THAT producer only
+- If a term applies to all producers, DUPLICATE it into every entry
+- Missing fields: {"value": "not found", "lines": []}
+
+PHASE 6 — SONG-SPECIFIC FIELDS (for EACH song)
+Fields: "Producer Royalty Points", "Type of Royalty", "Bumps", "Third Party Money", "Producer Advance Legal Recoupment", "Recoupment Classification", "Classification of Recoupment Language"
+(Same definitions as Phase 5)
+
+- Extract from the section for THAT song only (per-track schedule, subsection, table row)
+- For "Producer Royalty Points": use the royalty subsection, NOT the Bumps subsection. Include per-producer breakdown if stated alongside the aggregate rate.
+- For "Type of Royalty": use the type of royalty subsection, NOT the royalty points or bumps subsection.
+- "is_rate_explicit": true if explicitly stated for this song; false if from a blanket clause
+- "advance_scope": set to "agreement" if ONE advance covers all songs (no per-track breakdown); set to "song" if each track has its own distinct advance amount stated explicitly. Must be consistent with `Advance Mapping.structure` (per_song / per_master / per_producer_per_song → "song"; aggregate / equal_split / per_producer → "agreement"; none → "agreement").
+- Other blanket values: DUPLICATE into every song entry
+- Missing fields: {"value": "not found", "lines": []}
+
+OUTPUT FORMAT
+-------------
+{
+  "signatures": [
+    {"value": "<Party Name>", "signed": true, "lines": [1]},
+    {"value": "<Party Name>", "signed": false, "lines": [2]}
+  ],
+  "Song Title": {"value": "...", "lines": [1]},
+  "Artist Name": {"value": "...", "lines": [1]},
+  "Single/Multisong Line": {"value": "...", "lines": [1]},
+  "Direct Counterparty": {"value": "...", "lines": [1]},
+  "Alternative Counterparties": {"value": "...", "lines": [1]},
+  "Effective Date": {"value": "...", "lines": [1]},
+  "Contract Term": {"value": "...", "lines": [1]},
+  "Distributor": {"value": "...", "lines": [1]},
+  "Label": {"value": "...", "lines": [1]},
+  "Organization Counting Units": {"value": "...", "lines": [1]},
+  "Advance Mapping": {
+    "structure": "per_producer_per_song|per_song|per_producer|per_master|aggregate|equal_split|none",
+    "aggregate_total": "$10,000",
+    "split_note": "to be split equally among producers",
+    "entries": [
+      {"producer": "<Producer Name or 'all'>", "song": "<Song Title or 'all'>", "value": "$5,000", "lines": [42]}
+    ],
+    "lines": [40, 41, 42]
+  },
+  "producers": [
+    {
+      "producer_name": "<Producer Name>",
+      "Client Party": {"value": "...", "lines": [1]},
+      "Lawyer Information": {"value": {"client_lawyer": "...", "counterparty_lawyer": "..."}, "lines": [1]},
+      "Producer Royalty Points": [{"value": "...", "lines": [1]}],
+      "Type of Royalty": {"value": "...", "lines": [1]},
+      "Bumps": {"value": "...", "lines": [1]},
+      "Third Party Money": [{"value": "...", "lines": [1]}],
+      "Producer Advance Legal Recoupment": {"value": "...", "lines": [1]},
+      "Recoupment Classification": {"value": "...", "lines": [1]},
+      "Legal Advance": {"value": "...", "lines": [1]},
+      "Classification of Recoupment Language": {"value": "...", "lines": [1]}
+    }
+  ],
+  "songs": [
+    {
+      "song_title": "<Song Title>",
+      "Producer Royalty Points": [{"value": "...", "lines": [1]}],
+      "Type of Royalty": {"value": "...", "lines": [1]},
+      "Bumps": {"value": "...", "lines": [1]},
+      "Third Party Money": [{"value": "...", "lines": [1]}],
+      "Producer Advance Legal Recoupment": {"value": "...", "lines": [1]},
+      "Recoupment Classification": {"value": "...", "lines": [1]},
+      "Classification of Recoupment Language": {"value": "...", "lines": [1]},
+      "is_rate_explicit": true,
+      "advance_scope": "agreement|song"
+    }
+  ]
+}
+
+The example above shows ONE producer and ONE song entry — emit one entry per producer
+identified and one per song identified, following the same schema. No placeholders.

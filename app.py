@@ -1,3 +1,4 @@
+import hmac
 import json
 import os
 import re
@@ -16,7 +17,6 @@ from werkzeug.exceptions import HTTPException
 import job_store
 from extractor import S3_BUCKET, TextractError, s3, textract_lines, upload
 from gpt_extractor import extract_field_information
-from prompt import FIELD_DESCRIPTIONS
 
 app = Flask(__name__)
 CORS(app)
@@ -24,6 +24,14 @@ CORS(app)
 LAMBDA_FUNCTION_ARN = os.getenv("LAMBDA_FUNCTION_ARN", "arn:aws:lambda:us-east-2:713944518341:function:extract-tool-api")
 lambda_client = boto3.client("lambda")
 ALLOWED_EXTS = {"pdf"}
+API_KEY = os.getenv("PARSER_API_KEY")
+
+
+@app.before_request
+def require_api_key():
+    # Enforced once PARSER_API_KEY is set, so callers can start sending the key first.
+    if API_KEY and request.endpoint != "max_route" and not hmac.compare_digest(request.headers.get("x-api-key", ""), API_KEY):
+        return jsonify({"error": "Unauthorized"}), 401
 
 
 @app.errorhandler(TextractError)
@@ -47,6 +55,7 @@ def _unsupported(filename):
 @app.route("/extract", methods=["POST"])
 def uploads():
     ids = {"artist_id": request.args.get("artist_id"), "original_document_id": request.args.get("original_document_id")}
+    instructions = request.form.get("instructions")
     files = request.files.getlist("file")
     if not files:
         return jsonify({"error": "No file provided"}), 400
@@ -55,7 +64,7 @@ def uploads():
     for file in files:
         name = file.filename.lower()
         if name.endswith(".pdf"):
-            preview = extract_field_information(*textract_lines(upload(file.filename, file.read())))
+            preview = extract_field_information(*textract_lines(upload(file.filename, file.read())), instructions=instructions)
             results.append({"file": file.filename, **ids, "preview": preview})
         elif name.endswith((".doc", ".docx")):
             results.append({"file": file.filename, "error": "Currently, only PDF files are supported. Word document support is coming soon."})
@@ -68,7 +77,7 @@ def uploads():
         else:
             results.append({"file": file.filename, "error": "File type not supported. Only PDF, JPEG, JGE, PNG is allowed."})
     if image_lines:
-        results.append({"file": ", ".join(image_names), **ids, "preview": extract_field_information(image_lines)})
+        results.append({"file": ", ".join(image_names), **ids, "preview": extract_field_information(image_lines, instructions=instructions)})
     return jsonify(results)
 
 
@@ -98,7 +107,8 @@ def presigned_upload_url():
     return jsonify({"upload_url": upload_url, "s3_key": s3_key}), 200
 
 
-def _run_extraction(job_id, s3_key=None, url=None, artist_id=None, original_document_id=None, deadline=None):
+def _run_extraction(job_id, s3_key=None, url=None, artist_id=None, original_document_id=None, instructions=None,
+                    deadline=None):
     try:
         job_store.update_job(job_id, status="processing")
         if s3_key:
@@ -117,7 +127,7 @@ def _run_extraction(job_id, s3_key=None, url=None, artist_id=None, original_docu
         if error := _unsupported(filename):
             raise ValueError(error)
 
-        preview = extract_field_information(*textract_lines(s3_key or upload(filename, resp.content)), deadline)
+        preview = extract_field_information(*textract_lines(s3_key or upload(filename, resp.content)), deadline, instructions)
         job_store.update_job(job_id, status="done", result={
             "file": filename, "artist_id": artist_id, "original_document_id": original_document_id, "preview": preview,
         })
@@ -140,6 +150,7 @@ def extract_from_url():
         "url": file_url,
         "artist_id": request.args.get("artist_id"),
         "original_document_id": request.args.get("original_document_id"),
+        "instructions": data.get("instructions"),
     }).encode())
     return jsonify({"job_id": job_id, "status": "pending"}), 202
 
@@ -150,11 +161,6 @@ def get_result(job_id):
         return jsonify(job_store.get_job(job_id)), 200
     except KeyError:
         return jsonify({"error": "Job not found"}), 404
-
-
-@app.route("/get_fields", methods=["GET"])
-def get_fields():
-    return jsonify(FIELD_DESCRIPTIONS)
 
 
 @app.route("/max", methods=["GET"])
