@@ -4,8 +4,6 @@ import re
 _SIGNED_KEYS = {"by", "name", "print name", "printed name", "signature", "signed", "sign", "signatory", "authorized signatory"}
 _META_KEYS = {"title", "date", "its"}
 _NORM_KEY_RE = re.compile(r"[^a-z ]")
-# SoundExchange/LOD payment forms and DocuSign audit pages aren't party signatures.
-_EXCLUDED_RE = re.compile(r"\b(soundexchange|letter of direction|lod|final audit report)\b", re.IGNORECASE)
 _Y_GAP, _X_GAP = 0.05, 0.20
 
 def _classify_key(key):
@@ -41,7 +39,9 @@ def _build_block(cluster, excluded):
     }
 
 
-def cluster_signature_blocks(annotations, line_index):
+def cluster_signature_blocks(annotations, line_index, exclude_pages=()):
+    # DocuSign audit pages are never party signatures; callers add their own page phrases.
+    excluded_re = re.compile(rf"\b({'|'.join(map(re.escape, ('final audit report', *exclude_pages)))})\b", re.IGNORECASE)
     by_page = {}
     for ann in annotations:
         kind = "signature" if ann["type"] == "signature" else _classify_key(ann["key"])
@@ -51,7 +51,7 @@ def cluster_signature_blocks(annotations, line_index):
     blocks = []
     for page in sorted(by_page):
         # Whole page, since the LOD/audit header usually sits far above its signature block.
-        excluded = bool(_EXCLUDED_RE.search(" ".join(e["text"] for e in line_index.values() if e["page"] == page)))
+        excluded = bool(excluded_re.search(" ".join(e["text"] for e in line_index.values() if e["page"] == page)))
         for band in _chain_cluster(by_page[page], "top", _Y_GAP):
             for column in _chain_cluster(band, "left", _X_GAP):
                 block = _build_block(column, excluded)
