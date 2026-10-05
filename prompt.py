@@ -1,9 +1,3 @@
-import os
-
-# Transitional: used when a caller predates sending its own instructions.
-with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "producer_agreement.txt"), encoding="utf-8") as f:
-    _DEFAULT_INSTRUCTIONS = f.read()
-
 def _contract_text(line_index):
     parts, page = [], None
     for n in sorted(line_index):
@@ -30,8 +24,8 @@ def _signature_blocks(blocks):
         parts.append("")
     return "\n".join(parts)
 
-def build_extraction_prompt(line_index, signature_blocks, instructions=None):
-    return f"""{(instructions or _DEFAULT_INSTRUCTIONS).strip()}
+def build_extraction_prompt(line_index, signature_blocks, instructions):
+    return f"""{instructions.strip()}
 
 CONTRACT TEXT
 -------------

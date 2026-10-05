@@ -19,7 +19,7 @@ The parser doesn't decide what to extract. The caller sends the document-specifi
 | Method | Path | Body | Returns |
 |---|---|---|---|
 | POST | `/presigned-upload-url` | `{"filename": "x.pdf", "content_type": "application/pdf"}` | `{"upload_url", "s3_key"}`. PUT the PDF to `upload_url`. |
-| POST | `/extract_from_url?artist_id=&original_document_id=` | `{"s3_key": "..."}` or `{"url": "..."}`, plus `"instructions"` | `202 {"job_id", "status": "pending"}` |
+| POST | `/extract_from_url?artist_id=&original_document_id=` | `{"s3_key": "..."}` or `{"url": "..."}`, plus `"instructions"` (required) | `202 {"job_id", "status": "pending"}` |
 | GET | `/result/<job_id>` | | Job record: `status` is `pending`, `processing`, `done` or `failed`. `result.preview` holds the fields when done; `error` holds the traceback when failed. |
 
 `url` can be a direct PDF link or a Google Drive share link. Jobs run in a background invocation of the same Lambda, outside API Gateway's 29 s limit.
@@ -28,7 +28,7 @@ The parser doesn't decide what to extract. The caller sends the document-specifi
 
 | Method | Path | Notes |
 |---|---|---|
-| POST | `/extract?artist_id=&original_document_id=` | Multipart, one or more `file` fields plus an `instructions` field. Each PDF is parsed separately. JPEG/PNG images are parsed together as one document, a page per image, without coordinates. |
+| POST | `/extract?artist_id=&original_document_id=` | Multipart, one or more `file` fields plus a required `instructions` field. Each PDF is parsed separately. JPEG/PNG images are parsed together as one document, a page per image, without coordinates. |
 | GET | `/max` | Health check. |
 
 ## Result format
@@ -55,7 +55,7 @@ RoyaltyHouse keeps one instructions file per document type (`resources/prompts/`
 - ask for each value verbatim, with `"lines"` as the integer line numbers it appears on (highlighting depends on it);
 - include a `signatures` array with one entry per DETECTED SIGNATURE BLOCK, in order. The parser keeps only each entry's name; the blocks decide signed/unsigned, and `Execution Status` is computed from them.
 
-`producer_agreement.txt` is a transitional default for callers that don't send instructions yet. Delete it, and the fallback in `prompt.py`, once every RoyaltyHouse environment sends its own.
+A request without `instructions` is rejected with `400`.
 
 ## Configuration
 

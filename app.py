@@ -46,6 +46,8 @@ def uploads():
     files = request.files.getlist("file")
     if not files:
         return jsonify({"error": "No file provided"}), 400
+    if not instructions:
+        return jsonify({"error": "Missing 'instructions' field"}), 400
 
     results, image_lines, image_names = [], {}, []
     for file in files:
@@ -125,6 +127,8 @@ def extract_from_url():
     s3_key, file_url = data.get("s3_key"), data.get("url")
     if not s3_key and not file_url:
         return jsonify({"error": "Missing 'url' or 's3_key' in request body"}), 400
+    if not data.get("instructions"):
+        return jsonify({"error": "Missing 'instructions' in request body"}), 400
 
     job_id = str(uuid.uuid4())
     job_store.create_job(job_id, s3_key or file_url)
