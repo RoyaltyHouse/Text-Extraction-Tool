@@ -7,7 +7,7 @@ The parser doesn't decide what to extract. The caller sends the document-specifi
 ## How it works
 
 1. **OCR**: Textract (FORMS + SIGNATURES) returns numbered lines with word boxes, plus detected signatures and form key/value pairs, each pinned to its nearest line (`extractor.py`).
-2. **Signature blocks**: signature-related annotations are clustered by position into one block per signing party (`signature_blocks.py`). A block counts as signed only when Textract detected a signature in it. Blocks on SoundExchange / Letter of Direction pages or DocuSign audit pages are excluded.
+2. **Signature blocks**: signature-related annotations are clustered by position into one block per signing party (`signature_blocks.py`). A block counts as signed only when Textract detected a signature in it. Blocks on DocuSign audit pages, or on pages containing any phrase in the caller's `exclude_signature_pages`, are excluded.
 3. **Extraction**: the caller's instructions are followed by the numbered contract text and the signature blocks (`prompt.py`). The model returns the requested fields, each with the line numbers it read the value from.
 4. **Reconciliation**: the blocks decide how many parties there are and whether each signed. The model only names them. Execution Status (`FX` fully / `PX` partially / `NX` not executed) is computed from the blocks.
 5. **Coordinates**: each value is matched to the words on its cited lines. If that fails, the search widens by two lines; if that also fails, the cited lines are highlighted whole. The matched words are merged into one box per line (`gpt_extractor.py`).
@@ -19,7 +19,7 @@ The parser doesn't decide what to extract. The caller sends the document-specifi
 | Method | Path | Body | Returns |
 |---|---|---|---|
 | POST | `/presigned-upload-url` | `{"filename": "x.pdf", "content_type": "application/pdf"}` | `{"upload_url", "s3_key"}`. PUT the PDF to `upload_url`. |
-| POST | `/extract_from_url?artist_id=&original_document_id=` | `{"s3_key": "..."}` or `{"url": "..."}`, plus `"instructions"` (required) | `202 {"job_id", "status": "pending"}` |
+| POST | `/extract_from_url?artist_id=&original_document_id=` | `{"s3_key": "..."}` or `{"url": "..."}`, plus `"instructions"` (required) and optionally `"exclude_signature_pages": ["..."]` | `202 {"job_id", "status": "pending"}` |
 | GET | `/result/<job_id>` | | Job record: `status` is `pending`, `processing`, `done` or `failed`. `result.preview` holds the fields when done; `error` holds the traceback when failed. |
 
 `url` can be a direct PDF link or a Google Drive share link. Jobs run in a background invocation of the same Lambda, outside API Gateway's 29 s limit.
@@ -28,7 +28,7 @@ The parser doesn't decide what to extract. The caller sends the document-specifi
 
 | Method | Path | Notes |
 |---|---|---|
-| POST | `/extract?artist_id=&original_document_id=` | Multipart, one or more `file` fields plus a required `instructions` field. Each PDF is parsed separately. JPEG/PNG images are parsed together as one document, a page per image, without coordinates. |
+| POST | `/extract?artist_id=&original_document_id=` | Multipart, one or more `file` fields plus a required `instructions` field and optional repeated `exclude_signature_pages` fields. Each PDF is parsed separately. JPEG/PNG images are parsed together as one document, a page per image, without coordinates. |
 | GET | `/max` | Health check. |
 
 ## Result format
@@ -37,7 +37,7 @@ The parser doesn't decide what to extract. The caller sends the document-specifi
 {
   "Effective Date": {"value": "July 16, 2026", "lines": [3], "page_number": 1,
                      "coords": [{"Left": 0.52, "Top": 0.11, "Width": 0.12, "Height": 0.01}]},
-  "signatures": [{"value": "Kings From Queens, LLC", "signed": true, "lines": [120, 121], "page_number": 6, "coords": [...]}],
+  "signatures": [{"value": "Kings From Queens, LLC", "role": "client", "signed": true, "lines": [120, 121], "page_number": 6, "coords": [...]}],
   "Execution Status": {"value": "FX", "lines": [120], "page_number": 6, "coords": [...]},
   "Advance Mapping": {"structure": "aggregate", "aggregate_total": "$10,000", "entries": [...], "lines": [...]},
   "producers": [{"producer_name": "...", "Client Party": {...}, "Producer Royalty Points": [{...}], ...}],
@@ -53,7 +53,7 @@ The parser doesn't decide what to extract. The caller sends the document-specifi
 RoyaltyHouse keeps one instructions file per document type (`resources/prompts/` in that repo) and sends it as `instructions`. The instructions must:
 
 - ask for each value verbatim, with `"lines"` as the integer line numbers it appears on (highlighting depends on it);
-- include a `signatures` array with one entry per DETECTED SIGNATURE BLOCK, in order. The parser keeps only each entry's name; the blocks decide signed/unsigned, and `Execution Status` is computed from them.
+- include a `signatures` array with one entry per DETECTED SIGNATURE BLOCK, in order. The blocks decide `signed` and `lines`, and `Execution Status` is computed from them. The entry's name and any other keys the instructions ask for (e.g. `role`) are passed through.
 
 A request without `instructions` is rejected with `400`.
 

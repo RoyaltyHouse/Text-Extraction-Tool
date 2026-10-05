@@ -84,13 +84,14 @@ def _apply_coords(node, line_index):
             _apply_coords(child, line_index)
 
 def _reconcile_signatures(blocks, gpt_signatures):
-    # Blocks decide the count and signed verdict; the model only labels each party, in block order.
+    # Blocks decide the count, signed verdict and lines; the model's labels (name, role, ...) pass through in block order.
     labels = gpt_signatures if isinstance(gpt_signatures, list) else []
     out = []
     for i, block in enumerate(b for b in blocks if not b["excluded"]):
-        label = labels[i].get("value") if i < len(labels) and isinstance(labels[i], dict) else None
+        entry = labels[i] if i < len(labels) and isinstance(labels[i], dict) else {}
+        label = entry.get("value")
         lo, hi = block["line_range"]
-        out.append({"value": label.strip() if isinstance(label, str) and label.strip() else f"Party {i + 1}",
+        out.append({**entry, "value": label.strip() if isinstance(label, str) and label.strip() else f"Party {i + 1}",
                     "signed": block["signed"], "lines": list(range(lo, hi + 1)) if lo is not None else []})
     return out
 
@@ -98,8 +99,8 @@ def _derive_execution_status(signatures):
     signed = sum(s["signed"] for s in signatures)
     return "NX" if not signed else "FX" if signed == len(signatures) else "PX"
 
-def extract_field_information(line_index, annotations=(), deadline=None, instructions=None):
-    blocks = cluster_signature_blocks(annotations, line_index)
+def extract_field_information(line_index, annotations=(), deadline=None, instructions=None, exclude_signature_pages=()):
+    blocks = cluster_signature_blocks(annotations, line_index, exclude_signature_pages)
     for i, b in enumerate(blocks, 1):
         tag = "EXCLUDED" if b["excluded"] else "SIGNED" if b["signed"] else "UNSIGNED"
         fields = ", ".join(f'{f["key"]}={f["value"]!r}' for f in b["fields"]) or "(no form fields)"

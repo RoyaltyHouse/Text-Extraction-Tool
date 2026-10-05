@@ -45,9 +45,12 @@ def test_classifier_filters_unrelated():
 
 # ── End-to-end scenarios ──────────────────────────────────────────────────
 
+_LOD_PAGES = ("soundexchange", "letter of direction", "lod")
+
+
 def _run(name, line_index, annotations, gpt_sigs,
-         expected_status, expected_count, expected_signed_count):
-    blocks = cluster_signature_blocks(annotations, line_index)
+         expected_status, expected_count, expected_signed_count, exclude=()):
+    blocks = cluster_signature_blocks(annotations, line_index, exclude)
     sigs = _reconcile_signatures(blocks, gpt_sigs)
     status = _derive_execution_status(sigs)
     actual_signed = sum(1 for s in sigs if s["signed"])
@@ -133,7 +136,29 @@ def test_fx_lod_block_excluded():
         {"type": "signature",  "page": 9, "confidence": 94.0,                           "near_line": 120, "left": 0.15, "top": 0.51},
     ]
     _run("fx_lod_excluded", li, ann, [{"value": "P"}],
-         expected_status="FX", expected_count=1, expected_signed_count=1)
+         expected_status="FX", expected_count=1, expected_signed_count=1, exclude=_LOD_PAGES)
+
+
+def test_lod_blocks_kept_without_caller_exclusion():
+    """A standalone LOD document: its own signature blocks are the parties."""
+    li = {120: {"page": 1, "text": "SOUNDEXCHANGE LETTER OF DIRECTION (LOD)", "words": []}}
+    ann = [
+        {"type": "form_field", "page": 1, "key": "By:", "value": "Kentrell Gaulden", "near_line": 120, "left": 0.15, "top": 0.50},
+        {"type": "signature",  "page": 1, "confidence": 94.0,                         "near_line": 120, "left": 0.15, "top": 0.51},
+    ]
+    _run("lod_kept", li, ann, [], expected_status="FX", expected_count=1, expected_signed_count=1)
+
+
+def test_model_labels_pass_through():
+    """Extra keys the instructions ask for (e.g. role) survive; signed and lines stay the block's."""
+    li = {101: {"page": 8, "text": "P", "words": []}}
+    ann = [
+        {"type": "form_field", "page": 8, "key": "By:", "value": "John Smith", "near_line": 101, "left": 0.15, "top": 0.62},
+        {"type": "signature",  "page": 8, "confidence": 98.5,                   "near_line": 101, "left": 0.15, "top": 0.63},
+    ]
+    sigs = _reconcile_signatures(cluster_signature_blocks(ann, li),
+                                 [{"value": " John Smith ", "role": "client", "signed": False, "lines": [999]}])
+    assert sigs == [{"value": "John Smith", "role": "client", "signed": True, "lines": [101]}], sigs
 
 
 def test_nx_gpt_hallucinates_signature():
@@ -245,7 +270,7 @@ def test_nx6_lod_header_far_from_signature():
         {"type": "signature",  "page": 11, "confidence": 94.0,                                          "near_line": 381, "left": 0.04,  "top": 0.36},
     ]
     _run("nx6_page_spanning_lod", li, ann, [],
-         expected_status="NX", expected_count=2, expected_signed_count=0)
+         expected_status="NX", expected_count=2, expected_signed_count=0, exclude=_LOD_PAGES)
 
 
 # ── Defensive: malformed GPT output must not crash ───────────────────────

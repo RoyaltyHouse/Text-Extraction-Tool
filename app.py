@@ -53,7 +53,8 @@ def uploads():
     for file in files:
         name = file.filename.lower()
         if name.endswith(".pdf"):
-            preview = extract_field_information(*textract_lines(upload(file.filename, file.read())), instructions=instructions)
+            preview = extract_field_information(*textract_lines(upload(file.filename, file.read())), instructions=instructions,
+                                                exclude_signature_pages=request.form.getlist("exclude_signature_pages"))
             results.append({"file": file.filename, **ids, "preview": preview})
         elif name.endswith((".doc", ".docx")):
             results.append({"file": file.filename, "error": "Currently, only PDF files are supported. Word document support is coming soon."})
@@ -95,7 +96,7 @@ def presigned_upload_url():
     return jsonify({"upload_url": upload_url, "s3_key": s3_key}), 200
 
 def _run_extraction(job_id, s3_key=None, url=None, artist_id=None, original_document_id=None, instructions=None,
-                    deadline=None):
+                    exclude_signature_pages=(), deadline=None):
     try:
         job_store.update_job(job_id, status="processing")
         if s3_key:
@@ -114,7 +115,8 @@ def _run_extraction(job_id, s3_key=None, url=None, artist_id=None, original_docu
         if error := _unsupported(filename):
             raise ValueError(error)
 
-        preview = extract_field_information(*textract_lines(s3_key or upload(filename, resp.content)), deadline, instructions)
+        preview = extract_field_information(*textract_lines(s3_key or upload(filename, resp.content)), deadline, instructions,
+                                            exclude_signature_pages)
         job_store.update_job(job_id, status="done", result={
             "file": filename, "artist_id": artist_id, "original_document_id": original_document_id, "preview": preview,
         })
@@ -139,6 +141,7 @@ def extract_from_url():
         "artist_id": request.args.get("artist_id"),
         "original_document_id": request.args.get("original_document_id"),
         "instructions": data.get("instructions"),
+        "exclude_signature_pages": data.get("exclude_signature_pages") or [],
     }).encode())
     return jsonify({"job_id": job_id, "status": "pending"}), 202
 
